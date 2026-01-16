@@ -4,97 +4,78 @@ import sys
 import discord
 from discord.ext import commands
 import datetime
+import csv
+import io
+
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
 # === ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
 def check_env_vars():
     print("="*60)
-    print("🚀 ЗАПУСК DISCORD-БОТА ДЛЯ АНАЛИТИКИ")
+    print("🚀 ЗАПУСК DISCORD АНАЛИТИЧЕСКОГО БОТА")
     print("="*60)
     
-    # Проверка переменных
     missing = []
+    diagnostics = []
+    
+    # Проверяем каждую переменную
     for var in ["DISCORD_BOT_TOKEN", "GOOGLE_SHEET_ID", "GOOGLE_CREDENTIALS_JSON"]:
-        if not os.getenv(var):
+        value = os.getenv(var)
+        if value and value.strip():
+            preview = value[:8] + "..." if len(value) > 8 else value
+            diagnostics.append(f"✅ {var}: {preview}")
+        else:
+            diagnostics.append(f"❌ {var}: НЕ ЗАДАН")
             missing.append(var)
+    
+    # Выводим диагностику
+    for line in diagnostics:
+        print(line)
     
     if missing:
         print("\n" + "!"*60)
-        print("❗ ОТСУТСТВУЮТ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:")
+        print("❗ КРИТИЧЕСКАЯ ОШИБКА: Отсутствуют обязательные переменные!")
         for var in missing:
-            print(f"   - {var}")
-        print("\n🔧 ИНСТРУКЦИЯ:")
-        print("1. Railway → Settings → Variables (Production)")
-        print("2. Добавьте ВСЕ три переменные")
-        print("3. Для GOOGLE_CREDENTIALS_JSON используйте ПРАВИЛЬНЫЙ ФОРМАТ:")
-        print("   • Все \\n должны быть ОДИНАРНЫМИ (не двойными)")
-        print("   • Нет лишних кавычек вокруг JSON")
-        print("4. Actions → Restart")
+            print(f"   → {var}")
+        print("\n🔧 ИНСТРУКЦИЯ ПО ИСПРАВЛЕНИЮ:")
+        print("1. Перейдите в Railway → Settings → Variables (Production)")
+        print("2. Убедитесь, что созданы ВСЕ три переменные:")
+        print("   - DISCORD_BOT_TOKEN")
+        print("   - GOOGLE_SHEET_ID")
+        print("   - GOOGLE_CREDENTIALS_JSON (минифицированный JSON)")
+        print("3. Нажмите Actions → Restart после сохранения")
         print("!"*60)
         sys.exit(1)
     
-    print("✅ Все переменные окружения найдены")
+    print("✅ Все переменные окружения успешно загружены")
+    return True
 
-# Запускаем диагностику
+# Запускаем диагностику ДО инициализации бота
 check_env_vars()
 
-# === ИНИЦИАЛИЗАЦИЯ ===
+# === ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННЫХ ===
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-GOOGLE_CREDENTIALS_RAW = os.getenv("GOOGLE_CREDENTIALS_JSON")
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
-
-# === КРИТИЧЕСКИ ВАЖНО: ПРАВИЛЬНОЕ ФОРМАТИРОВАНИЕ JSON ===
-def fix_credentials_json(raw_json):
-    """Гарантированно исправляет формат JSON для Google Auth"""
-    try:
-        # Попытка загрузить как есть
-        return json.loads(raw_json)
-    except json.JSONDecodeError:
-        # Исправляем распространенные ошибки форматирования
-        fixed = raw_json.strip()
-        
-        # Убираем внешние кавычки если есть
-        if fixed.startswith('"') and fixed.endswith('"'):
-            fixed = fixed[1:-1]
-        
-        # Заменяем двойные слеши на одинарные (\\n → \n)
-        fixed = fixed.replace("\\\\n", "\\n")
-        fixed = fixed.replace("\\n", "\n")
-        
-        # Удаляем лишние пробелы вокруг URL
-        fixed = fixed.replace("https://accounts.google.com/o/oauth2/auth  ", "https://accounts.google.com/o/oauth2/auth")
-        fixed = fixed.replace("https://oauth2.googleapis.com/token  ", "https://oauth2.googleapis.com/token")
-        fixed = fixed.replace("https://www.googleapis.com/oauth2/v1/certs  ", "https://www.googleapis.com/oauth2/v1/certs")
-        fixed = fixed.replace("https://www.googleapis.com/robot/v1/metadata/x509/  ", "https://www.googleapis.com/robot/v1/metadata/x509/")
-        
-        try:
-            return json.loads(fixed)
-        except json.JSONDecodeError as e:
-            print("\n" + "!"*60)
-            print(f"❌ ФАТАЛЬНАЯ ОШИБКА ФОРМАТА JSON: {str(e)}")
-            print("\n📋 ПРИМЕР КОРРЕКТНОГО ФОРМАТА:")
-            print('{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQ...\\n-----END PRIVATE KEY-----\\n", ...}')
-            print("\n🔧 РЕКОМЕНДАЦИИ:")
-            print("1. Скопируйте JSON из этого шаблона: https://pastebin.com/raw/9XcL3DzJ")
-            print("2. ИЛИ используйте Railway CLI для установки переменной:")
-            print("   railway variable set GOOGLE_CREDENTIALS_JSON=\"$(cat credentials.json)\"")
-            print("!"*60)
-            sys.exit(1)
 
 # === НАСТРОЙКА GOOGLE SHEETS ===
 try:
-    print("\n⚙️ ПОДГОТОВКА УЧЕТНЫХ ДАННЫХ GOOGLE...")
+    print("\n⚙️ ИНИЦИАЛИЗАЦИЯ GOOGLE SHEETS API...")
     
-    # Получаем корректный JSON-объект
-    creds_data = fix_credentials_json(GOOGLE_CREDENTIALS_RAW)
+    # Автоматическое исправление форматирования JSON
+    raw_json = GOOGLE_CREDENTIALS_JSON.strip()
     
-    # Проверяем наличие приватного ключа
-    if "private_key" not in creds_data or not creds_data["private_key"].strip():
-        raise ValueError("Приватный ключ отсутствует в учетных данных")
+    # Исправляем форматирование приватного ключа
+    if "private_key" in raw_json:
+        # Заменяем двойные слеши на одинарные
+        raw_json = raw_json.replace("\\\\n", "\\n")
+        # Убираем лишние пробелы в конце URL
+        raw_json = raw_json.replace("  ", " ")
     
-    print(f"✅ Сервисный аккаунт: {creds_data.get('client_email', 'неизвестно')}")
+    # Загружаем данные
+    creds_data = json.loads(raw_json)
     
     # Создаем учетные данные
     creds = Credentials.from_service_account_info(
@@ -102,51 +83,139 @@ try:
         scopes=['https://www.googleapis.com/auth/spreadsheets']
     )
     
-    # Подключаемся к API
+    # Подключаемся к Sheets API
     sheets_service = build('sheets', 'v4', credentials=creds)
     
-    # Тестовое чтение метаданных таблицы
+    # Тестовый запрос для проверки подключения
     spreadsheet = sheets_service.spreadsheets().get(
         spreadsheetId=SHEET_ID
     ).execute()
     
-    print(f"✅ УСПЕШНО ПОДКЛЮЧЕНО К ТАБЛИЦЕ: {spreadsheet['properties']['title']}")
-    print(f"📊 Диапазон данных: A:G")
+    print(f"✅ УСПЕШНОЕ ПОДКЛЮЧЕНИЕ К ТАБЛИЦЕ: {spreadsheet['properties']['title']}")
+    print(f"📊 ID таблицы: {SHEET_ID[:10]}...")
+
+except json.JSONDecodeError as e:
+    print("\n" + "!"*60)
+    print(f"❌ ОШИБКА ПАРСИНГА JSON: {str(e)}")
+    print("\n🔧 РЕКОМЕНДАЦИИ:")
+    print("1. Используйте ТОЛЬКО минифицированный JSON для GOOGLE_CREDENTIALS_JSON")
+    print("2. Убедитесь, что все переносы строк заменены на \\n (одинарные слеши)")
+    print("3. Проверьте JSON на валидность здесь: https://jsonlint.com/")
+    print("!"*60)
+    sys.exit(1)
 
 except Exception as e:
     print("\n" + "!"*60)
-    print(f"❌ ОШИБКА GOOGLE SHEETS: {str(e)}")
-    print("\n🔍 ДЕТАЛЬНАЯ ДИАГНОСТИКА:")
-    print(f"- ID таблицы: {SHEET_ID[:10]}...")
-    if 'creds_data' in locals():
-        email = creds_data.get('client_email', 'неизвестно')
-        print(f"- Email сервисного аккаунта: {email}")
-        print("- Проверьте доступ таблицы для этого email")
-    print("\n🔧 ЧЕК-ЛИСТ ИСПРАВЛЕНИЙ:")
-    print("1. GOOGLE_CREDENTIALS_JSON должен содержать ОДИНАРНЫЕ \\n")
-    print("2. Таблица должна быть доступна для email сервисного аккаунта")
-    print("3. В Railway Variables нет лишних пробелов в начале/конце значений")
+    print(f"❌ ОШИБКА GOOGLE SHEETS API: {str(e)}")
+    print("\n🔧 ПРОВЕРЬТЕ:")
+    print(f"- Правильность SHEET_ID: {SHEET_ID[:10]}...")
+    print("- Доступ таблицы для сервисного аккаунта:")
+    print("  • Email: " + creds_data.get('client_email', 'неизвестно'))
+    print("- Разрешения таблицы: Права 'Редактор' для email выше")
+    print("- Включение Google Sheets API в Google Cloud Console")
     print("!"*60)
     sys.exit(1)
 
 # === НАСТРОЙКА DISCORD БОТА ===
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+intents.message_content = True  # Для чтения содержимого сообщений
+intents.members = True  # Для получения информации о пользователях
 
 bot = commands.Bot(
     command_prefix=COMMAND_PREFIX,
     intents=intents,
     activity=discord.Game(name="Аналитика | !help"),
     status=discord.Status.online,
-    help_command=None  # Отключаем встроенную справку
+    help_command=None  # Отключаем встроенную команду help
 )
 
-# === КОМАНДЫ ===
+# === КОМАНДА: АНАЛИЗ АКТИВНОСТИ ===
 @bot.command(name="activity")
 async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
     """Анализ активности в канале за период. Пример: !activity #чат 2026-01-01 2026-01-15"""
-    await ctx.send(f"🔄 Собираю данные по каналу {channel.mention}...")
+    await ctx.send(f"🔄 Запускаю анализ активности в канале {channel.mention}...")
+    
+    try:
+        # Обработка дат
+        if end_date is None:
+            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            
+        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
+        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
+        
+        if start_dt > end_dt:
+            await ctx.send("❌ Ошибка: дата начала позже даты окончания!")
+            return
+            
+        # Сбор статистики
+        message_count = 0
+        unique_users = set()
+        images = 0
+        links = 0
+        
+        async for message in channel.history(after=start_dt, before=end_dt, limit=None):
+            if message.author.bot:
+                continue
+                
+            message_count += 1
+            unique_users.add(str(message.author))
+            
+            # Анализ контента
+            if message.attachments:
+                images += 1
+            if "http://" in message.content or "https://" in message.content:
+                links += 1
+        
+        # Формирование отчета
+        report = (
+            f"📊 **Отчет по активности**\n"
+            f"📅 Период: `{start_date} - {end_date}`\n"
+            f"💬 Сообщений: **{message_count}**\n"
+            f"👥 Уникальных пользователей: **{len(unique_users)}**\n"
+            f"🖼️ Изображений: **{images}**\n"
+            f"🔗 Ссылок: **{links}**\n"
+            f"📈 Канал: `{channel.name}`"
+        )
+        await ctx.send(report)
+        
+        # Отправка в Google Sheets
+        values = [[
+            ctx.guild.name,
+            channel.name,
+            start_date,
+            end_date,
+            message_count,
+            len(unique_users),
+            images,
+            links,
+            datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        ]]
+        
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SHEET_ID,
+            range="Activity!A:I",  # Отдельный лист для активности
+            valueInputOption="USER_ENTERED",
+            body={"values": values}
+        ).execute()
+        
+        await ctx.send("✅ Данные успешно сохранены в Google Sheets!")
+        
+    except ValueError:
+        await ctx.send("❌ Ошибка формата даты. Используйте формат ГГГГ-ММ-ДД\nПример: `2026-01-15`")
+    except discord.Forbidden:
+        await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Проверьте разрешения в настройках сервера.")
+    except Exception as e:
+        await ctx.send(f"⚠️ Критическая ошибка: `{str(e)}`")
+        print(f"\n🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ В КОМАНДЕ activity: {e}")
+
+# === КОМАНДА: АНАЛИЗ ВЛОЖЕНИЙ ===
+@bot.command(name="attachments")
+async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None, limit: int = 500):
+    """
+    Анализ сообщений с вложениями за период.
+    Пример: !attachments #media 2026-01-01 2026-01-07 500
+    """
+    await ctx.send(f"🔍 Собираю сообщения с вложениями в канале {channel.mention}...")
     
     try:
         # Обработка дат
@@ -160,45 +229,79 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             await ctx.send("❌ Ошибка: дата начала позже даты окончания!")
             return
         
-        # Сбор статистики
-        message_count = 0
-        unique_users = set()
+        # Сбор данных
+        messages_with_attachments = []
+        total_attachments = 0
+        attachment_number = 1
         
-        async for message in channel.history(after=start_dt, before=end_dt, limit=None):
-            if message.author.bot:
+        async for message in channel.history(after=start_dt, before=end_dt, limit=limit):
+            if message.author.bot or not message.attachments:
                 continue
-            message_count += 1
-            unique_users.add(str(message.author))
+            
+            message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+            
+            # Для каждого вложения в сообщении
+            for attachment in message.attachments:
+                messages_with_attachments.append({
+                    "link": message_link,
+                    "attachment_url": attachment.url,
+                    "attachment_number": attachment_number,
+                    "author": str(message.author),
+                    "created_at": message.created_at.strftime("%Y-%m-%d %H:%M")
+                })
+                attachment_number += 1
+                total_attachments += 1
         
-        # Формирование отчета
-        report = (
-            f"📈 **Отчет по активности**\n"
-            f"📅 Период: `{start_date}` – `{end_date}`\n"
-            f"💬 Сообщений: **{message_count}**\n"
-            f"👥 Уникальных пользователей: **{len(unique_users)}**\n"
-            f"📌 Канал: `{channel.name}`"
-        )
+        # Формирование отчёта
+        if not messages_with_attachments:
+            await ctx.send(f"ℹ️ В период с {start_date} по {end_date} не найдено сообщений с вложениями.")
+            return
+        
+        # Генерация текста отчёта
+        report_lines = [f"📊 **Отчёт по вложениям** в канале `{channel.name}`"]
+        report_lines.append(f"📅 Период: `{start_date} - {end_date}`")
+        report_lines.append(f"📎 Всего вложений: **{total_attachments}**")
+        report_lines.append(f"💬 Сообщений с вложениями: **{len(set(m['link'] for m in messages_with_attachments))}**")
+        report_lines.append("\n🔗 **Ссылки на сообщения с вложениями:**")
+        
+        # Добавляем первые 20 записей в отчёт (чтобы не превысить лимит Discord)
+        for data in messages_with_attachments[:20]:
+            report_lines.append(f"[{data['link']}]({data['link']}) • **№ {data['attachment_number']}**")
+        
+        if len(messages_with_attachments) > 20:
+            report_lines.append(f"\nℹ️ Показаны первые 20 из {total_attachments} вложений. Для полного отчёта используйте `!export_attachments`")
+        
+        report = "\n".join(report_lines)
         await ctx.send(report)
         
-        # Отправка в Google Sheets
-        values = [[
-            ctx.guild.name,
-            channel.name,
-            start_date,
-            end_date,
-            message_count,
-            len(unique_users),
-            datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        ]]
-        
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SHEET_ID,
-            range="A:G",
-            valueInputOption="USER_ENTERED",
-            body={"values": values}
-        ).execute()
-        
-        await ctx.send("✅ Данные успешно сохранены в Google Таблицу!")
+        # Сохранение полного отчёта в Google Sheets
+        if messages_with_attachments:
+            values = []
+            for data in messages_with_attachments:
+                values.append([
+                    ctx.guild.name,
+                    channel.name,
+                    start_date,
+                    end_date,
+                    data['link'],
+                    data['attachment_url'],
+                    data['attachment_number'],
+                    data['author'],
+                    datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                ])
+            
+            # Пакетная отправка в Google Sheets
+            batch_size = 1000
+            for i in range(0, len(values), batch_size):
+                batch = values[i:i+batch_size]
+                sheets_service.spreadsheets().values().append(
+                    spreadsheetId=SHEET_ID,
+                    range="Attachments!A:I",  # Отдельный лист для вложений
+                    valueInputOption="USER_ENTERED",
+                    body={"values": batch}
+                ).execute()
+            
+            await ctx.send(f"✅ Полный отчёт из {total_attachments} вложений сохранён в Google Sheets!")
     
     except ValueError:
         await ctx.send("❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД (например, 2026-01-15)")
@@ -206,22 +309,81 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Выдайте права: `Просмотр канала` и `Чтение истории сообщений`")
     except Exception as e:
         await ctx.send(f"⚠️ Ошибка при обработке: `{str(e)}`")
-        print(f"\n🔥 ОШИБКА В КОМАНДЕ activity: {e}")
+        print(f"\n🔥 ОШИБКА В КОМАНДЕ attachments: {e}")
 
+# === КОМАНДА: ЭКСПОРТ ВЛОЖЕНИЙ В CSV ===
+@bot.command(name="export_attachments")
+async def export_attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
+    """Экспорт полного отчёта по вложениям в CSV файл"""
+    await ctx.send(f"💾 Готовлю полный экспорт вложений из канала {channel.mention}...")
+    
+    try:
+        # Обработка дат
+        if end_date is None:
+            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        
+        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
+        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
+        
+        # Сбор всех вложений
+        all_attachments = []
+        attachment_number = 1
+        
+        async for message in channel.history(after=start_dt, before=end_dt, limit=None):
+            if message.author.bot or not message.attachments:
+                continue
+            
+            message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+            for attachment in message.attachments:
+                all_attachments.append([
+                    message_link,
+                    attachment.url,
+                    attachment_number,
+                    str(message.author),
+                    message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                ])
+                attachment_number += 1
+        
+        if not all_attachments:
+            await ctx.send("ℹ️ Не найдено вложений для экспорта.")
+            return
+        
+        # Генерация CSV файла
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Ссылка на сообщение", "Ссылка на вложение", "№ вложения", "Автор", "Дата"])
+        writer.writerows(all_attachments)
+        
+        output.seek(0)
+        file = discord.File(fp=output, filename=f"attachments_{start_date}_{end_date}.csv")
+        
+        await ctx.send(
+            f"✅ Экспорт завершён! Найдено {len(all_attachments)} вложений.",
+            file=file
+        )
+        
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка при экспорте: {str(e)}")
+
+# === КОМАНДА: СПРАВКА ===
 @bot.command(name="help")
 async def help_cmd(ctx):
     """Показать справку по командам"""
     help_text = (
-        "**🤖 Справка по командам**\n\n"
-        f"`{COMMAND_PREFIX}activity #канал ГГГГ-ММ-ДД [ГГГГ-ММ-ДД]`\n"
-        "→ Анализ активности в канале за указанный период\n"
-        "→ Если вторая дата не указана, анализ до текущего дня\n\n"
-        f"`{COMMAND_PREFIX}help`\n"
+        "**🤖 Справка по командам бота**\n\n"
+        f"**`{COMMAND_PREFIX}activity #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ]`**\n"
+        "→ Анализ общей активности в канале за период\n\n"
+        f"**`{COMMAND_PREFIX}attachments #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ] [лимит]`**\n"
+        "→ Анализ сообщений с вложениями\n"
+        "→ Лимит по умолчанию: 500 сообщений\n\n"
+        f"**`{COMMAND_PREFIX}export_attachments #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ]`**\n"
+        "→ Экспорт полного отчёта по вложениям в CSV файл\n\n"
+        f"**`{COMMAND_PREFIX}help`**\n"
         "→ Показать эту справку\n\n"
-        "**⚙️ Требования**\n"
-        "• Бот должен иметь права: `Просмотр канала`, `Чтение истории сообщений`\n"
-        "• Формат даты: строго `ГГГГ-ММ-ДД`\n"
-        "• Google Таблица должна быть доступна для сервисного аккаунта"
+        "**📋 Требования для работы:**\n"
+        "• У бота должны быть права: `Просмотр канала`, `Чтение истории сообщений`, `Отправка сообщений`\n"
+        "• Даты указываются в формате `ГГГГ-ММ-ДД`\n"
+        "• Бот должен иметь доступ к вашей Google Таблице"
     )
     await ctx.send(help_text)
 
@@ -229,19 +391,34 @@ async def help_cmd(ctx):
 @bot.event
 async def on_ready():
     print("\n" + "="*60)
-    print(f"✅ БОТ {bot.user} УСПЕШНО ЗАПУЩЕН!")
-    print(f"🔗 Количество серверов: {len(bot.guilds)}")
+    print(f"✅ УСПЕШНЫЙ ЗАПУСК: {bot.user} готов к работе!")
+    print(f"🌐 Серверов в работе: {len(bot.guilds)}")
     print(f"⌨️ Префикс команд: '{COMMAND_PREFIX}'")
+    print(f"📊 Google Sheet ID: {SHEET_ID[:10]}...")
     print("="*60)
+    
+    # Отображаем список серверов для отладки
+    if bot.guilds:
+        print("\n🔗 ПОДКЛЮЧЕННЫЕ СЕРВЕРА:")
+        for guild in bot.guilds:
+            print(f"  - {guild.name} (ID: {guild.id})")
+    else:
+        print("\n⚠️ Бот не добавлен ни на один сервер! Добавьте его через OAuth2 URL")
+
+@bot.event
+async def on_guild_join(guild):
+    print(f"\n🎉 БОТ ДОБАВЛЕН НА НОВЫЙ СЕРВЕР: {guild.name} (ID: {guild.id})")
 
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
-        await ctx.send(f"❌ Неизвестная команда. Используйте `{COMMAND_PREFIX}help` для списка команд")
+        await ctx.send("❌ Неизвестная команда. Используйте `!help` для просмотра доступных команд.")
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"❌ Недостаточно аргументов. Используйте `{COMMAND_PREFIX}help` для справки")
+        await ctx.send("❌ Недостаточно аргументов. Проверьте синтаксис команды через `!help`")
+    else:
+        print(f"\n⚠️ ОШИБКА ПРИ ВЫПОЛНЕНИИ КОМАНДЫ: {error}")
 
-# === ЗАПУСК ===
+# === ЗАПУСК БОТА ===
 if __name__ == "__main__":
     try:
         print("\n⏳ ЗАПУСК БОТА...")
@@ -249,10 +426,12 @@ if __name__ == "__main__":
     except discord.LoginFailure:
         print("\n" + "!"*60)
         print("❌ ОШИБКА АВТОРИЗАЦИИ DISCORD")
-        print("Проверьте DISCORD_BOT_TOKEN в Railway Variables")
+        print("Проверьте правильность DISCORD_BOT_TOKEN в Railway Variables")
+        print("Убедитесь, что бот активирован в Discord Developer Portal")
         print("!"*60)
     except Exception as e:
         print("\n" + "!"*60)
-        print(f"🔥 КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
+        print(f"🔥 КРИТИЧЕСКАЯ ОШИБКА ЗАПУСКА: {str(e)}")
+        print("Проверьте логи выше для деталей")
         print("!"*60)
         sys.exit(1)
