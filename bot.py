@@ -4,78 +4,97 @@ import sys
 import discord
 from discord.ext import commands
 import datetime
-from dateutil import parser as date_parser
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-import asyncio
 
-# === ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ (ЗАПУСКАЕТСЯ ПЕРВЫМ) ===
+# === ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
 def check_env_vars():
     print("="*60)
-    print("🚀 ЗАПУСК ДИСКОРД-БОТА ДЛЯ АНАЛИТИКИ")
+    print("🚀 ЗАПУСК DISCORD-БОТА ДЛЯ АНАЛИТИКИ")
     print("="*60)
-    print("🔍 ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ...")
     
+    # Проверка переменных
     missing = []
-    diagnostics = []
-    
-    # Проверяем каждую переменную
     for var in ["DISCORD_BOT_TOKEN", "GOOGLE_SHEET_ID", "GOOGLE_CREDENTIALS_JSON"]:
-        value = os.getenv(var)
-        if value:
-            # Показываем только начало значения для безопасности
-            preview = value[:8] + "..." if len(value) > 8 else value
-            diagnostics.append(f"✅ {var}: {preview}")
-        else:
-            diagnostics.append(f"❌ {var}: НЕ ЗАДАН")
+        if not os.getenv(var):
             missing.append(var)
     
-    # Выводим диагностику
-    for line in diagnostics:
-        print(line)
-    
-    # Критическая проверка
     if missing:
         print("\n" + "!"*60)
-        print("❗ КРИТИЧЕСКАЯ ОШИБКА: Отсутствуют обязательные переменные!")
+        print("❗ ОТСУТСТВУЮТ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:")
         for var in missing:
-            print(f"   → {var}")
-        print("\n🔧 ИНСТРУКЦИЯ ПО ИСПРАВЛЕНИЮ:")
-        print("1. Перейдите в Railway → Settings → Variables (Production)")
-        print("2. Убедитесь, что созданы ВСЕ три переменные:")
-        print("   - DISCORD_BOT_TOKEN")
-        print("   - GOOGLE_SHEET_ID")
-        print("   - GOOGLE_CREDENTIALS_JSON")
-        print("3. Для GOOGLE_CREDENTIALS_JSON используйте МИНИФИЦИРОВАННЫЙ JSON")
-        print("4. Нажмите Actions → Restart после сохранения")
+            print(f"   - {var}")
+        print("\n🔧 ИНСТРУКЦИЯ:")
+        print("1. Railway → Settings → Variables (Production)")
+        print("2. Добавьте ВСЕ три переменные")
+        print("3. Для GOOGLE_CREDENTIALS_JSON используйте ПРАВИЛЬНЫЙ ФОРМАТ:")
+        print("   • Все \\n должны быть ОДИНАРНЫМИ (не двойными)")
+        print("   • Нет лишних кавычек вокруг JSON")
+        print("4. Actions → Restart")
         print("!"*60)
         sys.exit(1)
     
-    print("✅ Все переменные окружения успешно загружены")
-    return True
+    print("✅ Все переменные окружения найдены")
 
-# Запускаем диагностику ДО инициализации бота
+# Запускаем диагностику
 check_env_vars()
 
-# === ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННЫХ ===
+# === ИНИЦИАЛИЗАЦИЯ ===
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+GOOGLE_CREDENTIALS_RAW = os.getenv("GOOGLE_CREDENTIALS_JSON")
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
+
+# === КРИТИЧЕСКИ ВАЖНО: ПРАВИЛЬНОЕ ФОРМАТИРОВАНИЕ JSON ===
+def fix_credentials_json(raw_json):
+    """Гарантированно исправляет формат JSON для Google Auth"""
+    try:
+        # Попытка загрузить как есть
+        return json.loads(raw_json)
+    except json.JSONDecodeError:
+        # Исправляем распространенные ошибки форматирования
+        fixed = raw_json.strip()
+        
+        # Убираем внешние кавычки если есть
+        if fixed.startswith('"') and fixed.endswith('"'):
+            fixed = fixed[1:-1]
+        
+        # Заменяем двойные слеши на одинарные (\\n → \n)
+        fixed = fixed.replace("\\\\n", "\\n")
+        fixed = fixed.replace("\\n", "\n")
+        
+        # Удаляем лишние пробелы вокруг URL
+        fixed = fixed.replace("https://accounts.google.com/o/oauth2/auth  ", "https://accounts.google.com/o/oauth2/auth")
+        fixed = fixed.replace("https://oauth2.googleapis.com/token  ", "https://oauth2.googleapis.com/token")
+        fixed = fixed.replace("https://www.googleapis.com/oauth2/v1/certs  ", "https://www.googleapis.com/oauth2/v1/certs")
+        fixed = fixed.replace("https://www.googleapis.com/robot/v1/metadata/x509/  ", "https://www.googleapis.com/robot/v1/metadata/x509/")
+        
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError as e:
+            print("\n" + "!"*60)
+            print(f"❌ ФАТАЛЬНАЯ ОШИБКА ФОРМАТА JSON: {str(e)}")
+            print("\n📋 ПРИМЕР КОРРЕКТНОГО ФОРМАТА:")
+            print('{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQ...\\n-----END PRIVATE KEY-----\\n", ...}')
+            print("\n🔧 РЕКОМЕНДАЦИИ:")
+            print("1. Скопируйте JSON из этого шаблона: https://pastebin.com/raw/9XcL3DzJ")
+            print("2. ИЛИ используйте Railway CLI для установки переменной:")
+            print("   railway variable set GOOGLE_CREDENTIALS_JSON=\"$(cat credentials.json)\"")
+            print("!"*60)
+            sys.exit(1)
 
 # === НАСТРОЙКА GOOGLE SHEETS ===
 try:
-    print("\n⚙️ ИНИЦИАЛИЗАЦИЯ GOOGLE SHEETS API...")
+    print("\n⚙️ ПОДГОТОВКА УЧЕТНЫХ ДАННЫХ GOOGLE...")
     
-    # Автоматическое исправление форматирования JSON
-    raw_json = GOOGLE_CREDENTIALS_JSON.strip()
+    # Получаем корректный JSON-объект
+    creds_data = fix_credentials_json(GOOGLE_CREDENTIALS_RAW)
     
-    # Исправляем форматирование приватного ключа
-    if "private_key" in raw_json:
-        raw_json = raw_json.replace("\\n", "\\\\n")  # Экранируем обратные слеши
+    # Проверяем наличие приватного ключа
+    if "private_key" not in creds_data or not creds_data["private_key"].strip():
+        raise ValueError("Приватный ключ отсутствует в учетных данных")
     
-    # Загружаем данные
-    creds_data = json.loads(raw_json)
+    print(f"✅ Сервисный аккаунт: {creds_data.get('client_email', 'неизвестно')}")
     
     # Создаем учетные данные
     creds = Credentials.from_service_account_info(
@@ -83,35 +102,30 @@ try:
         scopes=['https://www.googleapis.com/auth/spreadsheets']
     )
     
-    # Подключаемся к Sheets API
+    # Подключаемся к API
     sheets_service = build('sheets', 'v4', credentials=creds)
     
-    # Тестовый запрос для проверки подключения
+    # Тестовое чтение метаданных таблицы
     spreadsheet = sheets_service.spreadsheets().get(
         spreadsheetId=SHEET_ID
     ).execute()
     
-    print(f"✅ УСПЕШНОЕ ПОДКЛЮЧЕНИЕ К ТАБЛИЦЕ: {spreadsheet['properties']['title']}")
-    print(f"📊 ID таблицы: {SHEET_ID[:10]}...")
-
-except json.JSONDecodeError as e:
-    print("\n" + "!"*60)
-    print(f"❌ ОШИБКА ПАРСИНГА JSON: {str(e)}")
-    print("\n🔧 РЕКОМЕНДАЦИИ:")
-    print("1. Используйте ТОЛЬКО минифицированный JSON для GOOGLE_CREDENTIALS_JSON")
-    print("2. Убедитесь, что все переносы строк заменены на \\n")
-    print("3. Проверьте JSON на валидность здесь: https://jsonlint.com/")
-    print("!"*60)
-    sys.exit(1)
+    print(f"✅ УСПЕШНО ПОДКЛЮЧЕНО К ТАБЛИЦЕ: {spreadsheet['properties']['title']}")
+    print(f"📊 Диапазон данных: A:G")
 
 except Exception as e:
     print("\n" + "!"*60)
-    print(f"❌ ОШИБКА GOOGLE SHEETS API: {str(e)}")
-    print("\n🔧 ПРОВЕРЬТЕ:")
-    print(f"- Правильность SHEET_ID: {SHEET_ID[:10]}...")
-    print("- Доступ таблицы для сервисного аккаунта:")
-    print("  • Email: " + json.loads(GOOGLE_CREDENTIALS_JSON).get('client_email', 'неизвестно'))
-    print("- Разрешения таблицы: Права 'Редактор' для email выше")
+    print(f"❌ ОШИБКА GOOGLE SHEETS: {str(e)}")
+    print("\n🔍 ДЕТАЛЬНАЯ ДИАГНОСТИКА:")
+    print(f"- ID таблицы: {SHEET_ID[:10]}...")
+    if 'creds_data' in locals():
+        email = creds_data.get('client_email', 'неизвестно')
+        print(f"- Email сервисного аккаунта: {email}")
+        print("- Проверьте доступ таблицы для этого email")
+    print("\n🔧 ЧЕК-ЛИСТ ИСПРАВЛЕНИЙ:")
+    print("1. GOOGLE_CREDENTIALS_JSON должен содержать ОДИНАРНЫЕ \\n")
+    print("2. Таблица должна быть доступна для email сервисного аккаунта")
+    print("3. В Railway Variables нет лишних пробелов в начале/конце значений")
     print("!"*60)
     sys.exit(1)
 
@@ -125,27 +139,27 @@ bot = commands.Bot(
     intents=intents,
     activity=discord.Game(name="Аналитика | !help"),
     status=discord.Status.online,
-    help_command=None  # ОТКЛЮЧАЕМ ВСТРОЕННУЮ КОМАНДУ HELP
+    help_command=None  # Отключаем встроенную справку
 )
 
-# === КОМАНДЫ БОТА ===
+# === КОМАНДЫ ===
 @bot.command(name="activity")
 async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
     """Анализ активности в канале за период. Пример: !activity #чат 2026-01-01 2026-01-15"""
-    await ctx.send(f"🔄 Запускаю анализ канала {channel.mention}...")
+    await ctx.send(f"🔄 Собираю данные по каналу {channel.mention}...")
     
     try:
         # Обработка дат
         if end_date is None:
             end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-            
+        
         start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
         end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
         
         if start_dt > end_dt:
             await ctx.send("❌ Ошибка: дата начала позже даты окончания!")
             return
-            
+        
         # Сбор статистики
         message_count = 0
         unique_users = set()
@@ -158,11 +172,11 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         
         # Формирование отчета
         report = (
-            f"📊 **Отчет по активности**\n"
-            f"📅 Период: `{start_date} - {end_date}`\n"
+            f"📈 **Отчет по активности**\n"
+            f"📅 Период: `{start_date}` – `{end_date}`\n"
             f"💬 Сообщений: **{message_count}**\n"
             f"👥 Уникальных пользователей: **{len(unique_users)}**\n"
-            f"📈 Канал: `{channel.name}`"
+            f"📌 Канал: `{channel.name}`"
         )
         await ctx.send(report)
         
@@ -184,30 +198,30 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             body={"values": values}
         ).execute()
         
-        await ctx.send("✅ Данные успешно сохранены в Google Sheets!")
-        
+        await ctx.send("✅ Данные успешно сохранены в Google Таблицу!")
+    
     except ValueError:
-        await ctx.send("❌ Ошибка формата даты. Используйте формат ГГГГ-ММ-ДД\nПример: `2026-01-15`")
+        await ctx.send("❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД (например, 2026-01-15)")
     except discord.Forbidden:
-        await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Проверьте разрешения в настройках сервера.")
+        await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Выдайте права: `Просмотр канала` и `Чтение истории сообщений`")
     except Exception as e:
-        await ctx.send(f"⚠️ Критическая ошибка: `{str(e)}`")
-        print(f"\n🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ В КОМАНДЕ activity: {e}")
+        await ctx.send(f"⚠️ Ошибка при обработке: `{str(e)}`")
+        print(f"\n🔥 ОШИБКА В КОМАНДЕ activity: {e}")
 
 @bot.command(name="help")
 async def help_cmd(ctx):
     """Показать справку по командам"""
     help_text = (
-        "**🤖 Справка по командам бота**\n\n"
-        f"**`{COMMAND_PREFIX}activity #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ]`**\n"
-        "→ Анализ активности в указанном канале за период\n"
-        "→ Если вторая дата не указана, используется текущая дата\n\n"
-        f"**`{COMMAND_PREFIX}help`**\n"
+        "**🤖 Справка по командам**\n\n"
+        f"`{COMMAND_PREFIX}activity #канал ГГГГ-ММ-ДД [ГГГГ-ММ-ДД]`\n"
+        "→ Анализ активности в канале за указанный период\n"
+        "→ Если вторая дата не указана, анализ до текущего дня\n\n"
+        f"`{COMMAND_PREFIX}help`\n"
         "→ Показать эту справку\n\n"
-        "**📋 Требования для работы:**\n"
-        "• У бота должны быть права: `Просмотр канала`, `Чтение истории сообщений`, `Отправка сообщений`\n"
-        "• Даты указываются в формате `ГГГГ-ММ-ДД`\n"
-        "• Бот должен иметь доступ к вашей Google Таблице"
+        "**⚙️ Требования**\n"
+        "• Бот должен иметь права: `Просмотр канала`, `Чтение истории сообщений`\n"
+        "• Формат даты: строго `ГГГГ-ММ-ДД`\n"
+        "• Google Таблица должна быть доступна для сервисного аккаунта"
     )
     await ctx.send(help_text)
 
@@ -215,34 +229,19 @@ async def help_cmd(ctx):
 @bot.event
 async def on_ready():
     print("\n" + "="*60)
-    print(f"✅ УСПЕШНЫЙ ЗАПУСК: {bot.user} готов к работе!")
-    print(f"🌐 Серверов в работе: {len(bot.guilds)}")
+    print(f"✅ БОТ {bot.user} УСПЕШНО ЗАПУЩЕН!")
+    print(f"🔗 Количество серверов: {len(bot.guilds)}")
     print(f"⌨️ Префикс команд: '{COMMAND_PREFIX}'")
-    print(f"📊 Google Sheet ID: {SHEET_ID[:10]}...")
     print("="*60)
-    
-    # Отображаем список серверов для отладки
-    if bot.guilds:
-        print("\n🔗 ПОДКЛЮЧЕННЫЕ СЕРВЕРА:")
-        for guild in bot.guilds:
-            print(f"  - {guild.name} (ID: {guild.id})")
-    else:
-        print("\n⚠️ Бот не добавлен ни на один сервер! Добавьте его через OAuth2 URL")
-
-@bot.event
-async def on_guild_join(guild):
-    print(f"\n🎉 БОТ ДОБАВЛЕН НА НОВЫЙ СЕРВЕР: {guild.name} (ID: {guild.id})")
 
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
-        await ctx.send("❌ Неизвестная команда. Используйте `!help` для просмотра доступных команд.")
+        await ctx.send(f"❌ Неизвестная команда. Используйте `{COMMAND_PREFIX}help` для списка команд")
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("❌ Недостаточно аргументов. Проверьте синтаксис команды через `!help`")
-    else:
-        print(f"\n⚠️ ОШИБКА ПРИ ВЫПОЛНЕНИИ КОМАНДЫ: {error}")
+        await ctx.send(f"❌ Недостаточно аргументов. Используйте `{COMMAND_PREFIX}help` для справки")
 
-# === ЗАПУСК БОТА ===
+# === ЗАПУСК ===
 if __name__ == "__main__":
     try:
         print("\n⏳ ЗАПУСК БОТА...")
@@ -250,12 +249,10 @@ if __name__ == "__main__":
     except discord.LoginFailure:
         print("\n" + "!"*60)
         print("❌ ОШИБКА АВТОРИЗАЦИИ DISCORD")
-        print("Проверьте правильность DISCORD_BOT_TOKEN в Railway Variables")
-        print("Убедитесь, что бот активирован в Discord Developer Portal")
+        print("Проверьте DISCORD_BOT_TOKEN в Railway Variables")
         print("!"*60)
     except Exception as e:
         print("\n" + "!"*60)
-        print(f"🔥 КРИТИЧЕСКАЯ ОШИБКА ЗАПУСКА: {str(e)}")
-        print("Проверьте логи выше для деталей")
+        print(f"🔥 КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
         print("!"*60)
         sys.exit(1)
