@@ -214,7 +214,8 @@ def is_image(attachment):
     """Проверяет, является ли вложение изображением"""
     if not attachment.content_type:
         return False
-    return attachment.content_type.startswith('image/')
+    content_type = attachment.content_type.lower()
+    return content_type.startswith('image/') or content_type in ['application/octet-stream', 'application/x-zip-compressed']
 
 # === КОМАНДА: АНАЛИЗ АКТИВНОСТИ С ТОП-ПОЛЬЗОВАТЕЛЯМИ (ТОЛЬКО ИЗОБРАЖЕНИЯ) ===
 @bot.command(name="activity")
@@ -240,7 +241,7 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             
         # Сбор статистики
         message_count = 0
-        unique_users = set()
+        unique_users = {}  # {user_id: display_name}
         images = 0  # Теперь считаем только изображения
         links = 0
         
@@ -252,9 +253,15 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             if message.author.bot:
                 continue
                 
-            user_id = str(message.author)
+            user_id = str(message.author.id)
+            # Используем отображаемое имя пользователя на сервере
+            display_name = str(message.author.display_name)
+            
+            # Сохраняем имя пользователя при первом появлении
+            if user_id not in unique_users:
+                unique_users[user_id] = display_name
+            
             message_count += 1
-            unique_users.add(user_id)
             
             # Подсчет сообщений по пользователям
             user_messages[user_id] = user_messages.get(user_id, 0) + 1
@@ -285,8 +292,9 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         # ТОП-10 по сообщениям
         top_messages = sorted(user_messages.items(), key=lambda x: x[1], reverse=True)[:10]
         if top_messages:
-            for i, (user, count) in enumerate(top_messages, 1):
-                report_lines.append(f"**{i}.** {user} — **{count}** сообщений")
+            for i, (user_id, count) in enumerate(top_messages, 1):
+                username = unique_users.get(user_id, "Неизвестный пользователь")
+                report_lines.append(f"**{i}.** {username} — **{count}** сообщений")
         else:
             report_lines.append("ℹ️ Нет данных для формирования ТОП-10 по сообщениям")
         
@@ -294,8 +302,9 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         report_lines.append("\n📸 **ТОП-10 пользователей по изображениям:**")
         top_images = sorted(user_images.items(), key=lambda x: x[1], reverse=True)[:10]
         if top_images:
-            for i, (user, count) in enumerate(top_images, 1):
-                report_lines.append(f"**{i}.** {user} — **{count}** изображений")
+            for i, (user_id, count) in enumerate(top_images, 1):
+                username = unique_users.get(user_id, "Неизвестный пользователь")
+                report_lines.append(f"**{i}.** {username} — **{count}** изображений")
         else:
             report_lines.append("ℹ️ Нет данных для формирования ТОП-10 по изображениям")
         
@@ -401,7 +410,7 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
                 message_images[message.id] = {
                     "link": message_link,
                     "images": [],
-                    "author": str(message.author),
+                    "author": str(message.author.display_name),  # Используем отображаемое имя
                     "created_at": message.created_at.strftime("%d-%m-%Y %H:%M")
                 }
             
@@ -434,7 +443,7 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
         # Показываем первые 20 сообщений (а не изображений)
         for i, data in enumerate(processed_messages[:20], 1):
             image_numbers = ", ".join(str(img["number"]) for img in data["images"])
-            report_lines.append(f"**{i}.** [{data['link']}]({data['link']}) • № {image_numbers}")
+            report_lines.append(f"**{i}.** [{data['link']}]({data['link']}) • № {image_numbers} • **{data['author']}**")
         
         if len(processed_messages) > 20:
             report_lines.append(f"\nℹ️ Показаны первые 20 из {total_messages} сообщений с изображениями. Для полного отчёта используйте `!export_images`")
@@ -539,7 +548,7 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
                 message_images[message.id] = {
                     "link": message_link,
                     "images": [],
-                    "author": str(message.author),
+                    "author": str(message.author.display_name),  # Используем отображаемое имя
                     "created_at": message.created_at.strftime("%d-%m-%Y %H:%M:%S")
                 }
             
@@ -647,20 +656,23 @@ async def help_cmd(ctx):
         f"**`{COMMAND_PREFIX}activity #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
         "→ Анализ общей активности в канале за период\n"
         "→ Считает ТОЛЬКО изображения (игнорирует документы, видео, аудио)\n"
-        "→ Включает ТОП-10 пользователей по сообщениям и изображениям\n\n"
+        "→ Показывает ТОП-10 пользователей по сообщениям и изображениям с их именами\n\n"
         
         f"**`{COMMAND_PREFIX}images #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ] [лимит]`**\n"
         "→ Анализ сообщений с изображениями\n"
         "→ Лимит по умолчанию: 500 сообщений\n"
-        "→ Изображения в одном сообщении группируются под одной ссылкой\n\n"
+        "→ Изображения в одном сообщении группируются под одной ссылкой с номерами\n"
+        "→ Отображается имя пользователя для каждого сообщения\n\n"
         
         f"**`{COMMAND_PREFIX}export_images #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
-        "→ Экспорт полного отчёта по изображениям в CSV файл и сохранение в Google Sheets\n\n"
+        "→ Экспорт полного отчёта по изображениям в CSV файл и сохранение в Google Sheets\n"
+        "→ В CSV включаются имена авторов изображений\n\n"
         
         "**🖼️ Важно:**\n"
         "→ Бот анализирует **ТОЛЬКО изображения** (jpg, png, gif, webp)\n"
         "→ Документы (pdf, docx), видео (mp4), аудио (mp3) и другие файлы **игнорируются**\n"
-        "→ Изображения определяются по MIME-типу файла\n\n"
+        "→ Изображения определяются по MIME-типу файла\n"
+        "→ Отображаются реальные имена пользователей (никнеймы) в отчётах\n\n"
         
         "**📅 Формат даты:**\n"
         "→ Используйте формат **ДД-ММ-ГГГГ** (например: `01-01-2026`)\n"
