@@ -1,0 +1,11 @@
+{
+  "DISCORD_TOKEN": "YOUR_DISCORD_BOT_TOKEN_HERE",
+  "GOOGLE_INTEGRATION": false,
+  "SHEET_ID": "YOUR_GOOGLE_SHEET_ID_HERE",
+  "TIMEZONE": "Europe/Moscow",
+  "PREDEFINED_GROUPS": {
+    "media": ["media", "art", "screenshots", "design"],
+    "reports": ["bug-reports", "feedback", "suggestions"],
+    "all_text": null
+  }
+}
