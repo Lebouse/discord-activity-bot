@@ -417,7 +417,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
         # Показываем первые 20 сообщений (а не вложений)
         for i, data in enumerate(processed_messages[:20], 1):
             attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
-            report_lines.append(f"**{i}.** [{data['link']}]({data['link']}) • **№ {attachment_numbers}**")
+            report_lines.append(f"**{i}.** [{data['link']}]({data['link']}) • № {attachment_numbers}")
         
         if len(processed_messages) > 20:
             report_lines.append(f"\nℹ️ Показаны первые 20 из {total_messages} сообщений с вложениями. Для полного отчёта используйте `!export_attachments`")
@@ -480,10 +480,10 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
         await ctx.send(f"⚠️ Ошибка при обработке: `{str(e)}`")
         print(f"\n🔥 ОШИБКА В КОМАНДЕ attachments: {e}")
 
-# === КОМАНДА: ЭКСПОРТ ВЛОЖЕНИЙ В CSV ===
+# === КОМАНДА: ЭКСПОРТ ВЛОЖЕНИЙ В CSV С СОХРАНЕНИЕМ В GOOGLE SHEETS ===
 @bot.command(name="export_attachments")
 async def export_attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
-    """Экспорт полного отчёта по вложениям в CSV файл (без ссылок на вложения)
+    """Экспорт полного отчёта по вложениям в CSV файл и сохранение в Google Sheets
     
     Пример: !export_attachments #media 01-01-2026 07-01-2026
     
@@ -521,23 +521,76 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
                 for attachment in message.attachments:
                     message_attachments[message.id]["attachments"].append({
                         "number": attachment_number,
-                        "url": attachment.url  # Этот параметр больше не используется в экспорт, но оставлен для внутренних целей
+                        "url": attachment.url
                     })
                     attachment_number += 1
+        
+        total_messages = len(message_attachments)
+        total_attachments = attachment_number - 1
         
         if not message_attachments:
             await ctx.send("ℹ️ Не найдено вложений для экспорта.")
             return
         
-        # Генерация CSV файла БЕЗ столбца со ссылками на вложения
+        # === СОХРАНЕНИЕ В GOOGLE SHEETS ===
+        await ctx.send("📤 Сохраняю данные в Google Sheets...")
+        
+        try:
+            values = []
+            for message_id, data in message_attachments.items():
+                attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
+                attachment_urls = " | ".join(att["url"] for att in data["attachments"])
+                
+                values.append([
+                    ctx.guild.name,
+                    channel.name,
+                    start_date,
+                    end_date,
+                    data['link'],
+                    attachment_urls,
+                    attachment_numbers,
+                    data['author'],
+                    datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC")
+                ])
+            
+            # Пакетная отправка в Google Sheets
+            batch_size = 1000
+            for i in range(0, len(values), batch_size):
+                batch = values[i:i+batch_size]
+                sheets_service.spreadsheets().values().append(
+                    spreadsheetId=SHEET_ID,
+                    range="Attachments!A:I",
+                    valueInputOption="USER_ENTERED",
+                    body={"values": batch}
+                ).execute()
+            
+            await ctx.send(f"✅ Данные успешно сохранены в Google Sheets! {total_messages} сообщений с {total_attachments} вложениями.")
+            
+        except HttpError as e:
+            if "Unable to parse range" in str(e):
+                await ctx.send("❌ Ошибка записи в таблицу: отсутствуют необходимые листы. Бот пытается создать их автоматически...")
+                ensure_sheets_exist(SHEET_ID)
+                # Повторная попытка записи
+                for i in range(0, len(values), batch_size):
+                    batch = values[i:i+batch_size]
+                    sheets_service.spreadsheets().values().append(
+                        spreadsheetId=SHEET_ID,
+                        range="Attachments!A:I",
+                        valueInputOption="USER_ENTERED",
+                        body={"values": batch}
+                    ).execute()
+                await ctx.send("✅ Листы созданы и данные сохранены!")
+            else:
+                await ctx.send(f"⚠️ Ошибка при сохранении в Google Sheets: {str(e)}")
+                print(f"Google Sheets error: {e}")
+        
+        # === ГЕНЕРАЦИЯ CSV ФАЙЛА ===
         output = io.StringIO()
         writer = csv.writer(output)
-        # Обновленные заголовки без "Ссылки на вложения"
         writer.writerow(["Ссылка на сообщение", "№ вложений", "Автор", "Дата"])
         
         for data in message_attachments.values():
             attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
-            # Записываем только нужные поля
             writer.writerow([
                 data['link'],
                 attachment_numbers,
@@ -546,10 +599,11 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
             ])
         
         output.seek(0)
-        file = discord.File(fp=output, filename=f"attachments_{start_date.replace('-', '')}_{end_date.replace('-', '')}.csv")
+        filename = f"attachments_{start_date.replace('-', '')}_{end_date.replace('-', '')}.csv"
+        file = discord.File(fp=output, filename=filename)
         
         await ctx.send(
-            f"✅ Экспорт завершён! Найдено {len(message_attachments)} сообщений с {attachment_number-1} вложениями.",
+            f"✅ Экспорт завершён! Найдено {total_messages} сообщений с {total_attachments} вложениями.",
             file=file
         )
         
@@ -557,6 +611,7 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
         await ctx.send(f"❌ {str(e)}")
     except Exception as e:
         await ctx.send(f"❌ Ошибка при экспорте: {str(e)}")
+        print(f"\n🔥 ОШИБКА В КОМАНДЕ export_attachments: {e}")
 
 # === КОМАНДА: СПРАВКА ===
 @bot.command(name="help")
@@ -575,7 +630,7 @@ async def help_cmd(ctx):
         "→ Вложения в одном сообщении группируются под одной ссылкой\n\n"
         
         f"**`{COMMAND_PREFIX}export_attachments #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
-        "→ Экспорт полного отчёта по вложениям в CSV файл (без ссылок на вложения)\n\n"
+        "→ Экспорт полного отчёта по вложениям в CSV файл и сохранение в Google Sheets\n\n"
         
         "**📅 Формат даты:**\n"
         "→ Используйте формат **ДД-ММ-ГГГГ** (например: `01-01-2026`)\n"
