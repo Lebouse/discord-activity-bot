@@ -21,7 +21,7 @@ def parse_date(date_str):
 # === ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
 def check_env_vars():
     print("="*60)
-    print("🚀 ЗАПУСК DISCORD АНАЛИТИЧЕСКОГО БОТА")
+    print("🚀 ЗАПУСК DISCORD АНАЛИТИЧЕСКОГО БОТА (ТОЛЬКО ИЗОБРАЖЕНИЯ)")
     print("="*60)
     
     missing = []
@@ -141,8 +141,8 @@ def ensure_sheets_exist(spreadsheet_id):
             "Activity": [
                 ["Сервер", "Канал", "Дата начала", "Дата окончания", "Сообщений", "Уникальных пользователей", "Изображений", "Ссылок", "Время"]
             ],
-            "Attachments": [
-                ["Сервер", "Канал", "Дата начала", "Дата окончания", "Ссылка на сообщение", "Ссылки на вложения", "№ вложений", "Автор", "Время экспорта"]
+            "Images": [  # Изменено название листа с "Attachments" на "Images"
+                ["Сервер", "Канал", "Дата начала", "Дата окончания", "Ссылка на сообщение", "Ссылки на изображения", "№ изображений", "Автор", "Время экспорта"]
             ]
         }
         
@@ -190,7 +190,7 @@ def ensure_sheets_exist(spreadsheet_id):
         print(f"⚠️ Ошибка при настройке листов: {str(e)}")
         print("💡 Совет: Создайте листы вручную в Google Таблице:")
         print("   - Лист 'Activity' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Сообщений, Уникальных пользователей, Изображений, Ссылок, Время")
-        print("   - Лист 'Attachments' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Ссылка на сообщение, Ссылки на вложения, № вложений, Автор, Время экспорта")
+        print("   - Лист 'Images' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Ссылка на сообщение, Ссылки на изображения, № изображений, Автор, Время экспорта")
 
 # === НАСТРОЙКА ЛИСТОВ ПРИ ЗАПУСКЕ ===
 print("\n🔧 ПРОВЕРКА ЛИСТОВ В GOOGLE ТАБЛИЦЕ...")
@@ -204,17 +204,24 @@ intents.members = True  # Для получения информации о по
 bot = commands.Bot(
     command_prefix=COMMAND_PREFIX,
     intents=intents,
-    activity=discord.Game(name="Аналитика | !help"),
+    activity=discord.Game(name="Анализ изображений | !help"),
     status=discord.Status.online,
     help_command=None  # Отключаем встроенную команду help
 )
 
-# === КОМАНДА: АНАЛИЗ АКТИВНОСТИ С ТОП-ПОЛЬЗОВАТЕЛЯМИ ===
+# === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ПРОВЕРКА ИЗОБРАЖЕНИЯ ===
+def is_image(attachment):
+    """Проверяет, является ли вложение изображением"""
+    if not attachment.content_type:
+        return False
+    return attachment.content_type.startswith('image/')
+
+# === КОМАНДА: АНАЛИЗ АКТИВНОСТИ С ТОП-ПОЛЬЗОВАТЕЛЯМИ (ТОЛЬКО ИЗОБРАЖЕНИЯ) ===
 @bot.command(name="activity")
 async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
     """Анализ активности в канале за период. Пример: !activity #чат 01-01-2026 15-01-2026
     
-    💡 Даты могут быть произвольными (например, с понедельника по воскресенье)
+    💡 Бот анализирует ТОЛЬКО изображения (jpg, png, gif), игнорируя документы, видео и другие файлы
     """
     await ctx.send(f"🔄 Запускаю анализ активности в канале {channel.mention}...")
     
@@ -234,12 +241,12 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         # Сбор статистики
         message_count = 0
         unique_users = set()
-        images = 0
+        images = 0  # Теперь считаем только изображения
         links = 0
         
         # Словари для сбора статистики по пользователям
         user_messages = {}  # {user_id: количество сообщений}
-        user_attachments = {}  # {user_id: количество вложений}
+        user_images = {}    # {user_id: количество изображений}
         
         async for message in channel.history(after=start_dt, before=end_dt, limit=None):
             if message.author.bot:
@@ -253,17 +260,19 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             user_messages[user_id] = user_messages.get(user_id, 0) + 1
             
             # Анализ контента
-            if message.attachments:
-                images += 1
-                # Подсчет вложений по пользователям
-                user_attachments[user_id] = user_attachments.get(user_id, 0) + len(message.attachments)
-                
+            # Подсчет ТОЛЬКО изображений
+            for attachment in message.attachments:
+                if is_image(attachment):
+                    images += 1
+                    # Подсчет изображений по пользователям
+                    user_images[user_id] = user_images.get(user_id, 0) + 1
+            
             if "http://" in message.content or "https://" in message.content:
                 links += 1
         
         # Формирование отчета
         report_lines = [
-            f"📊 **Отчет по активности**",
+            f"📊 **Отчет по активности (только изображения)**",
             f"📅 Период: `{start_date} - {end_date}`",
             f"💬 Сообщений: **{message_count}**",
             f"👥 Уникальных пользователей: **{len(unique_users)}**",
@@ -281,14 +290,14 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         else:
             report_lines.append("ℹ️ Нет данных для формирования ТОП-10 по сообщениям")
         
-        # ТОП-10 по вложениям
-        report_lines.append("\n📸 **ТОП-10 пользователей по вложениям:**")
-        top_attachments = sorted(user_attachments.items(), key=lambda x: x[1], reverse=True)[:10]
-        if top_attachments:
-            for i, (user, count) in enumerate(top_attachments, 1):
-                report_lines.append(f"**{i}.** {user} — **{count}** вложений")
+        # ТОП-10 по изображениям
+        report_lines.append("\n📸 **ТОП-10 пользователей по изображениям:**")
+        top_images = sorted(user_images.items(), key=lambda x: x[1], reverse=True)[:10]
+        if top_images:
+            for i, (user, count) in enumerate(top_images, 1):
+                report_lines.append(f"**{i}.** {user} — **{count}** изображений")
         else:
-            report_lines.append("ℹ️ Нет данных для формирования ТОП-10 по вложениям")
+            report_lines.append("ℹ️ Нет данных для формирования ТОП-10 по изображениям")
         
         report = "\n".join(report_lines)
         
@@ -345,16 +354,16 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         await ctx.send(f"⚠️ Критическая ошибка: `{str(e)}`")
         print(f"\n🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ В КОМАНДЕ activity: {e}")
 
-# === КОМАНДА: АНАЛИЗ ВЛОЖЕНИЙ С ГРУППИРОВКОЙ ===
-@bot.command(name="attachments")
-async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None, limit: int = 500):
+# === КОМАНДА: АНАЛИЗ ИЗОБРАЖЕНИЙ С ГРУППИРОВКОЙ ===
+@bot.command(name="images")
+async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None, limit: int = 500):
     """
-    Анализ сообщений с вложениями за период.
-    Пример: !attachments #media 01-01-2026 07-01-2026 500
+    Анализ сообщений с изображениями за период.
+    Пример: !images #media 01-01-2026 07-01-2026 500
     
-    💡 Даты могут быть произвольными (например, с понедельника по воскресенье)
+    💡 Бот анализирует ТОЛЬКО изображения (jpg, png, gif), игнорируя документы, видео и другие файлы
     """
-    await ctx.send(f"🔍 Собираю сообщения с вложениями в канале {channel.mention}...")
+    await ctx.send(f"🔍 Собираю сообщения с изображениями в канале {channel.mention}...")
     
     try:
         # Обработка дат (формат ДД-ММ-ГГГГ)
@@ -369,69 +378,77 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
             return
         
         # Сбор данных
-        message_attachments = {}  # {message_id: {"link": str, "attachments": [{"number": int, "url": str}], "author": str, "created_at": str}}
-        attachment_number = 1
+        message_images = {}  # {message_id: {"link": str, "images": [{"number": int, "url": str}], "author": str, "created_at": str}}
+        image_number = 1
         
         async for message in channel.history(after=start_dt, before=end_dt, limit=limit):
             if message.author.bot:
                 continue
                 
-            if message.attachments:  # Проверяем наличие вложений
-                message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+            # Проверяем наличие ИЗОБРАЖЕНИЙ в сообщении
+            image_attachments = [
+                att for att in message.attachments 
+                if is_image(att)
+            ]
+            
+            if not image_attachments:
+                continue  # Пропускаем сообщения без изображений
                 
-                # Инициализируем данные для сообщения
-                if message.id not in message_attachments:
-                    message_attachments[message.id] = {
-                        "link": message_link,
-                        "attachments": [],
-                        "author": str(message.author),
-                        "created_at": message.created_at.strftime("%d-%m-%Y %H:%M")
-                    }
-                
-                # Добавляем каждое вложение к сообщению
-                for attachment in message.attachments:
-                    message_attachments[message.id]["attachments"].append({
-                        "number": attachment_number,
-                        "url": attachment.url
-                    })
-                    attachment_number += 1
+            message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+            
+            # Инициализируем данные для сообщения
+            if message.id not in message_images:
+                message_images[message.id] = {
+                    "link": message_link,
+                    "images": [],
+                    "author": str(message.author),
+                    "created_at": message.created_at.strftime("%d-%m-%Y %H:%M")
+                }
+            
+            # Добавляем каждое ИЗОБРАЖЕНИЕ к сообщению
+            for attachment in image_attachments:
+                message_images[message.id]["images"].append({
+                    "number": image_number,
+                    "url": attachment.url
+                })
+                image_number += 1
         
-        total_messages = len(message_attachments)
-        total_attachments = sum(len(data["attachments"]) for data in message_attachments.values())
+        total_messages = len(message_images)
+        total_images = sum(len(data["images"]) for data in message_images.values())
         
         # Формирование отчёта
-        if not message_attachments:
-            await ctx.send(f"ℹ️ В период с {start_date} по {end_date} не найдено сообщений с вложениями.")
+        if not message_images:
+            await ctx.send(f"ℹ️ В период с {start_date} по {end_date} не найдено сообщений с изображениями.")
             return
         
         # Генерация текста отчёта
-        report_lines = [f"📊 **Отчёт по вложениям** в канале `{channel.name}`"]
+        report_lines = [f"📊 **Отчёт по изображениям** в канале `{channel.name}`"]
         report_lines.append(f"📅 Период: `{start_date} - {end_date}`")
-        report_lines.append(f"📎 Всего вложений: **{total_attachments}**")
-        report_lines.append(f"💬 Сообщений с вложениями: **{total_messages}**")
-        report_lines.append("\n🔗 **Ссылки на сообщения с вложениями:**")
+        report_lines.append(f"🖼️ Всего изображений: **{total_images}**")
+        report_lines.append(f"💬 Сообщений с изображениями: **{total_messages}**")
+        report_lines.append("\n🔗 **Ссылки на сообщения с изображениями:**")
         
-        # Формируем отчет с группировкой вложений по сообщениям
-        processed_messages = list(message_attachments.values())
+        # Формируем отчет с группировкой изображений по сообщениям
+        processed_messages = list(message_images.values())
         
-        # Показываем первые 20 сообщений (а не вложений)
+        # Показываем первые 20 сообщений (а не изображений)
         for i, data in enumerate(processed_messages[:20], 1):
-            attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
-            report_lines.append(f"**{i}.** [{data['link']}]({data['link']}) • № {attachment_numbers}")
+            image_numbers = ", ".join(str(img["number"]) for img in data["images"])
+            report_lines.append(f"**{i}.** [{data['link']}]({data['link']}) • № {image_numbers}")
         
         if len(processed_messages) > 20:
-            report_lines.append(f"\nℹ️ Показаны первые 20 из {total_messages} сообщений с вложениями. Для полного отчёта используйте `!export_attachments`")
+            report_lines.append(f"\nℹ️ Показаны первые 20 из {total_messages} сообщений с изображениями. Для полного отчёта используйте `!export_images`")
         
         report = "\n".join(report_lines)
         await ctx.send(report)
         
         # Сохранение полного отчёта в Google Sheets
-        if message_attachments:
+        if message_images:
             values = []
-            for message_id, data in message_attachments.items():
-                # Формируем одну запись для всего сообщения со всеми его вложениями
-                attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
-                attachment_urls = " | ".join(att["url"] for att in data["attachments"])
+            for message_id, data in message_images.items():
+                # Формируем одну запись для всего сообщения со всеми его изображениями
+                image_numbers = ", ".join(str(img["number"]) for img in data["images"])
+                image_urls = " | ".join(img["url"] for img in data["images"])
                 
                 values.append([
                     ctx.guild.name,
@@ -439,20 +456,20 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
                     start_date,
                     end_date,
                     data['link'],
-                    attachment_urls,
-                    attachment_numbers,
+                    image_urls,
+                    image_numbers,
                     data['author'],
                     datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC")
                 ])
             
-            # Пакетная отправка в Google Sheets
+            # Пакетная отправка в Google Sheets (теперь в лист Images)
             batch_size = 1000
             for i in range(0, len(values), batch_size):
                 batch = values[i:i+batch_size]
                 try:
                     sheets_service.spreadsheets().values().append(
                         spreadsheetId=SHEET_ID,
-                        range="Attachments!A:I",  # Отдельный лист для вложений
+                        range="Images!A:I",  # Используем лист Images вместо Attachments
                         valueInputOption="USER_ENTERED",
                         body={"values": batch}
                     ).execute()
@@ -462,7 +479,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
                         ensure_sheets_exist(SHEET_ID)
                         sheets_service.spreadsheets().values().append(
                             spreadsheetId=SHEET_ID,
-                            range="Attachments!A:I",
+                            range="Images!A:I",
                             valueInputOption="USER_ENTERED",
                             body={"values": batch}
                         ).execute()
@@ -470,7 +487,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
                     else:
                         raise e
             
-            await ctx.send(f"✅ Полный отчёт сохранён в Google Sheets! {total_messages} сообщений с {total_attachments} вложениями.")
+            await ctx.send(f"✅ Полный отчёт сохранён в Google Sheets! {total_messages} сообщений с {total_images} изображениями.")
     
     except ValueError as e:
         await ctx.send(f"❌ {str(e)}\n💡 Даты могут быть произвольными: понедельник-воскресенье, рабочие дни, любой период")
@@ -478,18 +495,18 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
         await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Выдайте права: `Просмотр канала` и `Чтение истории сообщений`")
     except Exception as e:
         await ctx.send(f"⚠️ Ошибка при обработке: `{str(e)}`")
-        print(f"\n🔥 ОШИБКА В КОМАНДЕ attachments: {e}")
+        print(f"\n🔥 ОШИБКА В КОМАНДЕ images: {e}")
 
-# === КОМАНДА: ЭКСПОРТ ВЛОЖЕНИЙ В CSV С СОХРАНЕНИЕМ В GOOGLE SHEETS ===
-@bot.command(name="export_attachments")
-async def export_attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
-    """Экспорт полного отчёта по вложениям в CSV файл и сохранение в Google Sheets
+# === КОМАНДА: ЭКСПОРТ ИЗОБРАЖЕНИЙ В CSV С СОХРАНЕНИЕМ В GOOGLE SHEETS ===
+@bot.command(name="export_images")
+async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
+    """Экспорт полного отчёта по изображениям в CSV файл и сохранение в Google Sheets
     
-    Пример: !export_attachments #media 01-01-2026 07-01-2026
+    Пример: !export_images #media 01-01-2026 07-01-2026
     
-    💡 Даты могут быть произвольными (например, с понедельника по воскресенье)
+    💡 Бот анализирует ТОЛЬКО изображения (jpg, png, gif), игнорируя документы, видео и другие файлы
     """
-    await ctx.send(f"💾 Готовлю полный экспорт вложений из канала {channel.mention}...")
+    await ctx.send(f"💾 Готовлю полный экспорт изображений из канала {channel.mention}...")
     
     try:
         # Обработка дат (формат ДД-ММ-ГГГГ)
@@ -499,37 +516,45 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
         start_dt = parse_date(start_date)
         end_dt = parse_date(end_date) + datetime.timedelta(days=1)
         
-        # Сбор всех вложений
-        message_attachments = {}
-        attachment_number = 1
+        # Сбор всех ИЗОБРАЖЕНИЙ
+        message_images = {}
+        image_number = 1
         
         async for message in channel.history(after=start_dt, before=end_dt, limit=None):
             if message.author.bot:
                 continue
                 
-            if message.attachments:
-                message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+            # Фильтруем только изображения
+            image_attachments = [
+                att for att in message.attachments 
+                if is_image(att)
+            ]
+            
+            if not image_attachments:
+                continue  # Пропускаем сообщения без изображений
                 
-                if message.id not in message_attachments:
-                    message_attachments[message.id] = {
-                        "link": message_link,
-                        "attachments": [],
-                        "author": str(message.author),
-                        "created_at": message.created_at.strftime("%d-%m-%Y %H:%M:%S")
-                    }
-                
-                for attachment in message.attachments:
-                    message_attachments[message.id]["attachments"].append({
-                        "number": attachment_number,
-                        "url": attachment.url
-                    })
-                    attachment_number += 1
+            message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+            
+            if message.id not in message_images:
+                message_images[message.id] = {
+                    "link": message_link,
+                    "images": [],
+                    "author": str(message.author),
+                    "created_at": message.created_at.strftime("%d-%m-%Y %H:%M:%S")
+                }
+            
+            for attachment in image_attachments:
+                message_images[message.id]["images"].append({
+                    "number": image_number,
+                    "url": attachment.url
+                })
+                image_number += 1
         
-        total_messages = len(message_attachments)
-        total_attachments = attachment_number - 1
+        total_messages = len(message_images)
+        total_images = image_number - 1
         
-        if not message_attachments:
-            await ctx.send("ℹ️ Не найдено вложений для экспорта.")
+        if not message_images:
+            await ctx.send("ℹ️ Не найдено изображений для экспорта.")
             return
         
         # === СОХРАНЕНИЕ В GOOGLE SHEETS ===
@@ -537,9 +562,9 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
         
         try:
             values = []
-            for message_id, data in message_attachments.items():
-                attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
-                attachment_urls = " | ".join(att["url"] for att in data["attachments"])
+            for message_id, data in message_images.items():
+                image_numbers = ", ".join(str(img["number"]) for img in data["images"])
+                image_urls = " | ".join(img["url"] for img in data["images"])
                 
                 values.append([
                     ctx.guild.name,
@@ -547,24 +572,24 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
                     start_date,
                     end_date,
                     data['link'],
-                    attachment_urls,
-                    attachment_numbers,
+                    image_urls,
+                    image_numbers,
                     data['author'],
                     datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC")
                 ])
             
-            # Пакетная отправка в Google Sheets
+            # Пакетная отправка в Google Sheets (теперь в лист Images)
             batch_size = 1000
             for i in range(0, len(values), batch_size):
                 batch = values[i:i+batch_size]
                 sheets_service.spreadsheets().values().append(
                     spreadsheetId=SHEET_ID,
-                    range="Attachments!A:I",
+                    range="Images!A:I",  # Используем лист Images вместо Attachments
                     valueInputOption="USER_ENTERED",
                     body={"values": batch}
                 ).execute()
             
-            await ctx.send(f"✅ Данные успешно сохранены в Google Sheets! {total_messages} сообщений с {total_attachments} вложениями.")
+            await ctx.send(f"✅ Данные успешно сохранены в Google Sheets! {total_messages} сообщений с {total_images} изображениями.")
             
         except HttpError as e:
             if "Unable to parse range" in str(e):
@@ -575,7 +600,7 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
                     batch = values[i:i+batch_size]
                     sheets_service.spreadsheets().values().append(
                         spreadsheetId=SHEET_ID,
-                        range="Attachments!A:I",
+                        range="Images!A:I",
                         valueInputOption="USER_ENTERED",
                         body={"values": batch}
                     ).execute()
@@ -587,23 +612,23 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
         # === ГЕНЕРАЦИЯ CSV ФАЙЛА ===
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Ссылка на сообщение", "№ вложений", "Автор", "Дата"])
+        writer.writerow(["Ссылка на сообщение", "№ изображений", "Автор", "Дата"])
         
-        for data in message_attachments.values():
-            attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
+        for data in message_images.values():
+            image_numbers = ", ".join(str(img["number"]) for img in data["images"])
             writer.writerow([
                 data['link'],
-                attachment_numbers,
+                image_numbers,
                 data['author'],
                 data['created_at']
             ])
         
         output.seek(0)
-        filename = f"attachments_{start_date.replace('-', '')}_{end_date.replace('-', '')}.csv"
+        filename = f"images_{start_date.replace('-', '')}_{end_date.replace('-', '')}.csv"
         file = discord.File(fp=output, filename=filename)
         
         await ctx.send(
-            f"✅ Экспорт завершён! Найдено {total_messages} сообщений с {total_attachments} вложениями.",
+            f"✅ Экспорт завершён! Найдено {total_messages} сообщений с {total_images} изображениями.",
             file=file
         )
         
@@ -611,7 +636,7 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
         await ctx.send(f"❌ {str(e)}")
     except Exception as e:
         await ctx.send(f"❌ Ошибка при экспорте: {str(e)}")
-        print(f"\n🔥 ОШИБКА В КОМАНДЕ export_attachments: {e}")
+        print(f"\n🔥 ОШИБКА В КОМАНДЕ export_images: {e}")
 
 # === КОМАНДА: СПРАВКА ===
 @bot.command(name="help")
@@ -621,16 +646,21 @@ async def help_cmd(ctx):
         "**🤖 Справка по командам бота**\n\n"
         f"**`{COMMAND_PREFIX}activity #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
         "→ Анализ общей активности в канале за период\n"
-        "→ Если вторая дата не указана, анализ до текущего дня\n"
-        "→ Включает ТОП-10 пользователей по сообщениям и вложениям\n\n"
+        "→ Считает ТОЛЬКО изображения (игнорирует документы, видео, аудио)\n"
+        "→ Включает ТОП-10 пользователей по сообщениям и изображениям\n\n"
         
-        f"**`{COMMAND_PREFIX}attachments #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ] [лимит]`**\n"
-        "→ Анализ сообщений с вложениями\n"
+        f"**`{COMMAND_PREFIX}images #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ] [лимит]`**\n"
+        "→ Анализ сообщений с изображениями\n"
         "→ Лимит по умолчанию: 500 сообщений\n"
-        "→ Вложения в одном сообщении группируются под одной ссылкой\n\n"
+        "→ Изображения в одном сообщении группируются под одной ссылкой\n\n"
         
-        f"**`{COMMAND_PREFIX}export_attachments #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
-        "→ Экспорт полного отчёта по вложениям в CSV файл и сохранение в Google Sheets\n\n"
+        f"**`{COMMAND_PREFIX}export_images #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
+        "→ Экспорт полного отчёта по изображениям в CSV файл и сохранение в Google Sheets\n\n"
+        
+        "**🖼️ Важно:**\n"
+        "→ Бот анализирует **ТОЛЬКО изображения** (jpg, png, gif, webp)\n"
+        "→ Документы (pdf, docx), видео (mp4), аудио (mp3) и другие файлы **игнорируются**\n"
+        "→ Изображения определяются по MIME-типу файла\n\n"
         
         "**📅 Формат даты:**\n"
         "→ Используйте формат **ДД-ММ-ГГГГ** (например: `01-01-2026`)\n"
