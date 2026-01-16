@@ -201,19 +201,23 @@ bot = commands.Bot(
     help_command=None  # Отключаем встроенную команду help
 )
 
-# === КОМАНДА: АНАЛИЗ АКТИВНОСТИ ===
+# === КОМАНДА: АНАЛИЗ АКТИВНОСТИ С ТОП-ПОЛЬЗОВАТЕЛЯМИ ===
 @bot.command(name="activity")
 async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
-    """Анализ активности в канале за период. Пример: !activity #чат 2026-01-01 2026-01-15"""
+    """Анализ активности в канале за период. Пример: !activity #чат 01.01.2026 15.01.2026
+    
+    💡 Даты могут быть произвольными (например, с понедельника по воскресенье)
+    """
     await ctx.send(f"🔄 Запускаю анализ активности в канале {channel.mention}...")
     
     try:
-        # Обработка дат
+        # Обработка дат (формат ДД.ММ.ГГГГ)
         if end_date is None:
-            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y")
             
-        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
-        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
+        # Парсим даты в формате ДД.ММ.ГГГГ
+        start_dt = datetime.datetime.strptime(start_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc)
+        end_dt = datetime.datetime.strptime(end_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
         
         if start_dt > end_dt:
             await ctx.send("❌ Ошибка: дата начала позже даты окончания!")
@@ -225,32 +229,71 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         images = 0
         links = 0
         
+        # Словари для сбора статистики по пользователям
+        user_messages = {}  # {user_id: количество сообщений}
+        user_attachments = {}  # {user_id: количество вложений}
+        
         async for message in channel.history(after=start_dt, before=end_dt, limit=None):
             if message.author.bot:
                 continue
                 
+            user_id = str(message.author)
             message_count += 1
-            unique_users.add(str(message.author))
+            unique_users.add(user_id)
+            
+            # Подсчет сообщений по пользователям
+            user_messages[user_id] = user_messages.get(user_id, 0) + 1
             
             # Анализ контента
             if message.attachments:
                 images += 1
+                # Подсчет вложений по пользователям
+                user_attachments[user_id] = user_attachments.get(user_id, 0) + len(message.attachments)
+                
             if "http://" in message.content or "https://" in message.content:
                 links += 1
         
         # Формирование отчета
-        report = (
-            f"📊 **Отчет по активности**\n"
-            f"📅 Период: `{start_date} - {end_date}`\n"
-            f"💬 Сообщений: **{message_count}**\n"
-            f"👥 Уникальных пользователей: **{len(unique_users)}**\n"
-            f"🖼️ Изображений: **{images}**\n"
-            f"🔗 Ссылок: **{links}**\n"
-            f"📈 Канал: `{channel.name}`"
-        )
-        await ctx.send(report)
+        report_lines = [
+            f"📊 **Отчет по активности**",
+            f"📅 Период: `{start_date} - {end_date}`",
+            f"💬 Сообщений: **{message_count}**",
+            f"👥 Уникальных пользователей: **{len(unique_users)}**",
+            f"🖼️ Изображений: **{images}**",
+            f"🔗 Ссылок: **{links}**",
+            f"📈 Канал: `{channel.name}`",
+            "\n🏆 **ТОП-10 пользователей по сообщениям:**"
+        ]
         
-        # Отправка в Google Sheets
+        # ТОП-10 по сообщениям
+        top_messages = sorted(user_messages.items(), key=lambda x: x[1], reverse=True)[:10]
+        if top_messages:
+            for i, (user, count) in enumerate(top_messages, 1):
+                report_lines.append(f"**{i}.** {user} — **{count}** сообщений")
+        else:
+            report_lines.append("ℹ️ Нет данных для формирования ТОП-10 по сообщениям")
+        
+        # ТОП-10 по вложениям
+        report_lines.append("\n📸 **ТОП-10 пользователей по вложениям:**")
+        top_attachments = sorted(user_attachments.items(), key=lambda x: x[1], reverse=True)[:10]
+        if top_attachments:
+            for i, (user, count) in enumerate(top_attachments, 1):
+                report_lines.append(f"**{i}.** {user} — **{count}** вложений")
+        else:
+            report_lines.append("ℹ️ Нет данных для формирования ТОП-10 по вложениям")
+        
+        report = "\n".join(report_lines)
+        
+        # Отправка отчета (разбиваем на части если превышает лимит)
+        if len(report) > 1900:
+            # Делим отчет на части
+            parts = [report[i:i+1900] for i in range(0, len(report), 1900)]
+            for part in parts:
+                await ctx.send(part)
+        else:
+            await ctx.send(report)
+        
+        # Отправка в Google Sheets (сохраняем только общую статистику)
         values = [[
             ctx.guild.name,
             channel.name,
@@ -260,13 +303,13 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             len(unique_users),
             images,
             links,
-            datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC")
         ]]
         
         try:
             sheets_service.spreadsheets().values().append(
                 spreadsheetId=SHEET_ID,
-                range="Activity!A:I",  # Отдельный лист для активности
+                range="Activity!A:I",
                 valueInputOption="USER_ENTERED",
                 body={"values": values}
             ).execute()
@@ -276,7 +319,6 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             if "Unable to parse range" in str(e):
                 await ctx.send("❌ Ошибка записи в таблицу: отсутствуют необходимые листы. Бот пытается создать их автоматически...")
                 ensure_sheets_exist(SHEET_ID)
-                # Повторная попытка записи
                 sheets_service.spreadsheets().values().append(
                     spreadsheetId=SHEET_ID,
                     range="Activity!A:I",
@@ -288,7 +330,7 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
                 raise e
         
     except ValueError:
-        await ctx.send("❌ Ошибка формата даты. Используйте формат ГГГГ-ММ-ДД\nПример: `2026-01-15`")
+        await ctx.send("❌ Ошибка формата даты. Используйте формат ДД.ММ.ГГГГ\nПример: `01.01.2026` или `15.01.2026`")
     except discord.Forbidden:
         await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Проверьте разрешения в настройках сервера.")
     except Exception as e:
@@ -300,17 +342,19 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
 async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None, limit: int = 500):
     """
     Анализ сообщений с вложениями за период.
-    Пример: !attachments #media 2026-01-01 2026-01-07 500
+    Пример: !attachments #media 01.01.2026 07.01.2026 500
+    
+    💡 Даты могут быть произвольными (например, с понедельника по воскресенье)
     """
     await ctx.send(f"🔍 Собираю сообщения с вложениями в канале {channel.mention}...")
     
     try:
-        # Обработка дат
+        # Обработка дат (формат ДД.ММ.ГГГГ)
         if end_date is None:
-            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y")
         
-        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
-        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
+        start_dt = datetime.datetime.strptime(start_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc)
+        end_dt = datetime.datetime.strptime(end_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
         
         if start_dt > end_dt:
             await ctx.send("❌ Ошибка: дата начала позже даты окончания!")
@@ -333,7 +377,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
                         "link": message_link,
                         "attachments": [],
                         "author": str(message.author),
-                        "created_at": message.created_at.strftime("%Y-%m-%d %H:%M")
+                        "created_at": message.created_at.strftime("%d.%m.%Y %H:%M")
                     }
                 
                 # Добавляем каждое вложение к сообщению
@@ -390,7 +434,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
                     attachment_urls,
                     attachment_numbers,
                     data['author'],
-                    datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC")
                 ])
             
             # Пакетная отправка в Google Sheets
@@ -421,7 +465,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
             await ctx.send(f"✅ Полный отчёт сохранён в Google Sheets! {total_messages} сообщений с {total_attachments} вложениями.")
     
     except ValueError:
-        await ctx.send("❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД (например, 2026-01-15)")
+        await ctx.send("❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ (например, 01.01.2026)\n💡 Даты могут быть произвольными: понедельник-воскресенье, рабочие дни, любой период")
     except discord.Forbidden:
         await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Выдайте права: `Просмотр канала` и `Чтение истории сообщений`")
     except Exception as e:
@@ -431,16 +475,21 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
 # === КОМАНДА: ЭКСПОРТ ВЛОЖЕНИЙ В CSV ===
 @bot.command(name="export_attachments")
 async def export_attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
-    """Экспорт полного отчёта по вложениям в CSV файл"""
+    """Экспорт полного отчёта по вложениям в CSV файл (без ссылок на вложения)
+    
+    Пример: !export_attachments #media 01.01.2026 07.01.2026
+    
+    💡 Даты могут быть произвольными (например, с понедельника по воскресенье)
+    """
     await ctx.send(f"💾 Готовлю полный экспорт вложений из канала {channel.mention}...")
     
     try:
-        # Обработка дат
+        # Обработка дат (формат ДД.ММ.ГГГГ)
         if end_date is None:
-            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y")
         
-        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
-        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
+        start_dt = datetime.datetime.strptime(start_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc)
+        end_dt = datetime.datetime.strptime(end_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
         
         # Сбор всех вложений
         message_attachments = {}
@@ -458,13 +507,13 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
                         "link": message_link,
                         "attachments": [],
                         "author": str(message.author),
-                        "created_at": message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                        "created_at": message.created_at.strftime("%d.%m.%Y %H:%M:%S")
                     }
                 
                 for attachment in message.attachments:
                     message_attachments[message.id]["attachments"].append({
                         "number": attachment_number,
-                        "url": attachment.url
+                        "url": attachment.url  # Этот параметр больше не используется в экспорт, но оставлен для внутренних целей
                     })
                     attachment_number += 1
         
@@ -472,17 +521,17 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
             await ctx.send("ℹ️ Не найдено вложений для экспорта.")
             return
         
-        # Генерация CSV файла
+        # Генерация CSV файла БЕЗ столбца со ссылками на вложения
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Ссылка на сообщение", "Ссылки на вложения", "№ вложений", "Автор", "Дата"])
+        # Обновленные заголовки без "Ссылки на вложения"
+        writer.writerow(["Ссылка на сообщение", "№ вложений", "Автор", "Дата"])
         
         for data in message_attachments.values():
             attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
-            attachment_urls = " | ".join(att["url"] for att in data["attachments"])
+            # Записываем только нужные поля
             writer.writerow([
                 data['link'],
-                attachment_urls,
                 attachment_numbers,
                 data['author'],
                 data['created_at']
@@ -506,18 +555,27 @@ async def help_cmd(ctx):
     help_text = (
         "**🤖 Справка по командам бота**\n\n"
         f"**`{COMMAND_PREFIX}activity #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ]`**\n"
-        "→ Анализ общей активности в канале за период\n\n"
+        "→ Анализ общей активности в канале за период\n"
+        "→ Если вторая дата не указана, анализ до текущего дня\n"
+        "→ Включает ТОП-10 пользователей по сообщениям и вложениям\n\n"
+        
         f"**`{COMMAND_PREFIX}attachments #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ] [лимит]`**\n"
         "→ Анализ сообщений с вложениями\n"
         "→ Лимит по умолчанию: 500 сообщений\n"
-        "→ Вложения в одном сообщении группируются под одной ссылкой с номерами через запятую\n\n"
+        "→ Вложения в одном сообщении группируются под одной ссылкой\n\n"
+        
         f"**`{COMMAND_PREFIX}export_attachments #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ]`**\n"
-        "→ Экспорт полного отчёта по вложениям в CSV файл\n\n"
-        f"**`{COMMAND_PREFIX}help`**\n"
-        "→ Показать эту справку\n\n"
+        "→ Экспорт полного отчёта по вложениям в CSV файл (без ссылок на вложения)\n\n"
+        
+        "**📅 Формат даты:**\n"
+        "→ Используйте формат **ДД.ММ.ГГГГ** (например: `01.01.2026`)\n"
+        "→ Даты могут быть **произвольными**:\n"
+        "  • Рабочая неделя (понедельник-пятница)\n"
+        "  • Полная неделя (понедельник-воскресенье)\n"
+        "  • Любой другой период (например, 15.01.2026-19.01.2026)\n\n"
+        
         "**📋 Требования для работы:**\n"
         "• У бота должны быть права: `Просмотр канала`, `Чтение истории сообщений`, `Отправка сообщений`\n"
-        "• Даты указываются в формате `ГГГГ-ММ-ДД`\n"
         "• Бот автоматически создаст необходимые листы в Google Таблице при первом запуске"
     )
     await ctx.send(help_text)
