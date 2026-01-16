@@ -1,0 +1,34 @@
+{
+  "build": {
+    "builder": "@railway/app-builder",
+    "args": {
+      "buildCommand": "pip install -r requirements.txt"
+    }
+  },
+  "deploy": {
+    "startCommand": "python bot.py",
+    "healthcheck": {
+      "endpoint": "/health",
+      "interval": 30,
+      "timeout": 10,
+      "maxRetries": 3
+    },
+    "restartPolicy": {
+      "type": "ALWAYS"
+    }
+  },
+  "service": {
+    "type": "web",
+    "port": 8080
+  },
+  "environment": {
+    "required": [
+      "DISCORD_TOKEN",
+      "GOOGLE_INTEGRATION",
+      "TIMEZONE"
+    ],
+    "optional": [
+      "SHEET_ID"
+    ]
+  }
+}
