@@ -9,6 +9,7 @@ import io
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # === ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
 def check_env_vars():
@@ -116,6 +117,78 @@ except Exception as e:
     print("!"*60)
     sys.exit(1)
 
+# === ФУНКЦИЯ: ПРОВЕРКА И СОЗДАНИЕ ЛИСТОВ ===
+def ensure_sheets_exist(spreadsheet_id):
+    """Проверяет наличие необходимых листов и создаёт их при отсутствии"""
+    try:
+        # Получаем список существующих листов
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id
+        ).execute()
+        
+        existing_sheets = [sheet['properties']['title'] for sheet in spreadsheet['sheets']]
+        sheets_to_create = []
+        
+        # Проверяем необходимые листы
+        required_sheets = {
+            "Activity": [
+                ["Сервер", "Канал", "Дата начала", "Дата окончания", "Сообщений", "Уникальных пользователей", "Изображений", "Ссылок", "Время"]
+            ],
+            "Attachments": [
+                ["Сервер", "Канал", "Дата начала", "Дата окончания", "Ссылка на сообщение", "Ссылка на вложение", "№ вложения", "Автор", "Время экспорта"]
+            ]
+        }
+        
+        for sheet_name, headers in required_sheets.items():
+            if sheet_name not in existing_sheets:
+                sheets_to_create.append(sheet_name)
+                print(f"📋 Создаю лист: {sheet_name}")
+                
+                # Создаём лист
+                batch_update_request = {
+                    "requests": [{
+                        "addSheet": {
+                            "properties": {
+                                "title": sheet_name,
+                                "gridProperties": {
+                                    "rowCount": 1000,
+                                    "columnCount": 10
+                                }
+                            }
+                        }
+                    }]
+                }
+                
+                sheets_service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body=batch_update_request
+                ).execute()
+                
+                # Заполняем заголовки
+                sheets_service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A1:I1",
+                    valueInputOption="USER_ENTERED",
+                    body={"values": headers}
+                ).execute()
+                
+                print(f"✅ Лист '{sheet_name}' создан и настроен")
+        
+        if not sheets_to_create:
+            print("✅ Все необходимые листы уже существуют")
+        else:
+            print(f"✅ Создано листов: {len(sheets_to_create)}")
+            
+    except Exception as e:
+        print(f"⚠️ Ошибка при настройке листов: {str(e)}")
+        print("💡 Совет: Создайте листы вручную в Google Таблице:")
+        print("   - Лист 'Activity' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Сообщений, Уникальных пользователей, Изображений, Ссылок, Время")
+        print("   - Лист 'Attachments' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Ссылка на сообщение, Ссылка на вложение, № вложения, Автор, Время экспорта")
+
+# === НАСТРОЙКА ЛИСТОВ ПРИ ЗАПУСКЕ ===
+print("\n🔧 ПРОВЕРКА ЛИСТОВ В GOOGLE ТАБЛИЦЕ...")
+ensure_sheets_exist(SHEET_ID)
+
 # === НАСТРОЙКА DISCORD БОТА ===
 intents = discord.Intents.default()
 intents.message_content = True  # Для чтения содержимого сообщений
@@ -191,14 +264,29 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         ]]
         
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SHEET_ID,
-            range="Activity!A:I",  # Отдельный лист для активности
-            valueInputOption="USER_ENTERED",
-            body={"values": values}
-        ).execute()
-        
-        await ctx.send("✅ Данные успешно сохранены в Google Sheets!")
+        try:
+            sheets_service.spreadsheets().values().append(
+                spreadsheetId=SHEET_ID,
+                range="Activity!A:I",  # Отдельный лист для активности
+                valueInputOption="USER_ENTERED",
+                body={"values": values}
+            ).execute()
+            
+            await ctx.send("✅ Данные успешно сохранены в Google Sheets!")
+        except HttpError as e:
+            if "Unable to parse range" in str(e):
+                await ctx.send("❌ Ошибка записи в таблицу: отсутствуют необходимые листы. Бот пытается создать их автоматически...")
+                ensure_sheets_exist(SHEET_ID)
+                # Повторная попытка записи
+                sheets_service.spreadsheets().values().append(
+                    spreadsheetId=SHEET_ID,
+                    range="Activity!A:I",
+                    valueInputOption="USER_ENTERED",
+                    body={"values": values}
+                ).execute()
+                await ctx.send("✅ Листы созданы и данные сохранены!")
+            else:
+                raise e
         
     except ValueError:
         await ctx.send("❌ Ошибка формата даты. Используйте формат ГГГГ-ММ-ДД\nПример: `2026-01-15`")
@@ -266,7 +354,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
         
         # Добавляем первые 20 записей в отчёт (чтобы не превысить лимит Discord)
         for data in messages_with_attachments[:20]:
-            report_lines.append(f"[{data['link']}]({data['link']}) • **№ {data['attachment_number']}**")
+            report_lines.append(f"[Сообщение]({data['link']}) • **Вложение № {data['attachment_number']}**")
         
         if len(messages_with_attachments) > 20:
             report_lines.append(f"\nℹ️ Показаны первые 20 из {total_attachments} вложений. Для полного отчёта используйте `!export_attachments`")
@@ -294,12 +382,27 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
             batch_size = 1000
             for i in range(0, len(values), batch_size):
                 batch = values[i:i+batch_size]
-                sheets_service.spreadsheets().values().append(
-                    spreadsheetId=SHEET_ID,
-                    range="Attachments!A:I",  # Отдельный лист для вложений
-                    valueInputOption="USER_ENTERED",
-                    body={"values": batch}
-                ).execute()
+                try:
+                    sheets_service.spreadsheets().values().append(
+                        spreadsheetId=SHEET_ID,
+                        range="Attachments!A:I",  # Отдельный лист для вложений
+                        valueInputOption="USER_ENTERED",
+                        body={"values": batch}
+                    ).execute()
+                except HttpError as e:
+                    if "Unable to parse range" in str(e):
+                        await ctx.send("❌ Ошибка записи в таблицу: отсутствуют необходимые листы. Бот пытается создать их автоматически...")
+                        ensure_sheets_exist(SHEET_ID)
+                        # Повторная попытка записи
+                        sheets_service.spreadsheets().values().append(
+                            spreadsheetId=SHEET_ID,
+                            range="Attachments!A:I",
+                            valueInputOption="USER_ENTERED",
+                            body={"values": batch}
+                        ).execute()
+                        await ctx.send("✅ Листы созданы и данные сохранены!")
+                    else:
+                        raise e
             
             await ctx.send(f"✅ Полный отчёт из {total_attachments} вложений сохранён в Google Sheets!")
     
@@ -383,7 +486,7 @@ async def help_cmd(ctx):
         "**📋 Требования для работы:**\n"
         "• У бота должны быть права: `Просмотр канала`, `Чтение истории сообщений`, `Отправка сообщений`\n"
         "• Даты указываются в формате `ГГГГ-ММ-ДД`\n"
-        "• Бот должен иметь доступ к вашей Google Таблице"
+        "• Бот автоматически создаст необходимые листы в Google Таблице при первом запуске"
     )
     await ctx.send(help_text)
 
