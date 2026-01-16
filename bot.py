@@ -6,7 +6,6 @@ from discord.ext import commands
 import datetime
 import csv
 import io
-
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -135,7 +134,7 @@ def ensure_sheets_exist(spreadsheet_id):
                 ["Сервер", "Канал", "Дата начала", "Дата окончания", "Сообщений", "Уникальных пользователей", "Изображений", "Ссылок", "Время"]
             ],
             "Attachments": [
-                ["Сервер", "Канал", "Дата начала", "Дата окончания", "Ссылка на сообщение", "Ссылка на вложение", "№ вложения", "Автор", "Время экспорта"]
+                ["Сервер", "Канал", "Дата начала", "Дата окончания", "Ссылка на сообщение", "Ссылки на вложения", "№ вложений", "Автор", "Время экспорта"]
             ]
         }
         
@@ -183,7 +182,7 @@ def ensure_sheets_exist(spreadsheet_id):
         print(f"⚠️ Ошибка при настройке листов: {str(e)}")
         print("💡 Совет: Создайте листы вручную в Google Таблице:")
         print("   - Лист 'Activity' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Сообщений, Уникальных пользователей, Изображений, Ссылок, Время")
-        print("   - Лист 'Attachments' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Ссылка на сообщение, Ссылка на вложение, № вложения, Автор, Время экспорта")
+        print("   - Лист 'Attachments' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Ссылка на сообщение, Ссылки на вложения, № вложений, Автор, Время экспорта")
 
 # === НАСТРОЙКА ЛИСТОВ ПРИ ЗАПУСКЕ ===
 print("\n🔧 ПРОВЕРКА ЛИСТОВ В GOOGLE ТАБЛИЦЕ...")
@@ -296,7 +295,7 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         await ctx.send(f"⚠️ Критическая ошибка: `{str(e)}`")
         print(f"\n🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ В КОМАНДЕ activity: {e}")
 
-# === КОМАНДА: АНАЛИЗ ВЛОЖЕНИЙ ===
+# === КОМАНДА: АНАЛИЗ ВЛОЖЕНИЙ С ГРУППИРОВКОЙ ===
 @bot.command(name="attachments")
 async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None, limit: int = 500):
     """
@@ -318,30 +317,38 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
             return
         
         # Сбор данных
-        messages_with_attachments = []
-        total_attachments = 0
+        message_attachments = {}  # {message_id: {"link": str, "attachments": [{"number": int, "url": str}], "author": str, "created_at": str}}
         attachment_number = 1
         
         async for message in channel.history(after=start_dt, before=end_dt, limit=limit):
-            if message.author.bot or not message.attachments:
+            if message.author.bot:
                 continue
-            
-            message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
-            
-            # Для каждого вложения в сообщении
-            for attachment in message.attachments:
-                messages_with_attachments.append({
-                    "link": message_link,
-                    "attachment_url": attachment.url,
-                    "attachment_number": attachment_number,
-                    "author": str(message.author),
-                    "created_at": message.created_at.strftime("%Y-%m-%d %H:%M")
-                })
-                attachment_number += 1
-                total_attachments += 1
+                
+            if message.attachments:  # Проверяем наличие вложений
+                message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+                
+                # Инициализируем данные для сообщения
+                if message.id not in message_attachments:
+                    message_attachments[message.id] = {
+                        "link": message_link,
+                        "attachments": [],
+                        "author": str(message.author),
+                        "created_at": message.created_at.strftime("%Y-%m-%d %H:%M")
+                    }
+                
+                # Добавляем каждое вложение к сообщению
+                for attachment in message.attachments:
+                    message_attachments[message.id]["attachments"].append({
+                        "number": attachment_number,
+                        "url": attachment.url
+                    })
+                    attachment_number += 1
+        
+        total_messages = len(message_attachments)
+        total_attachments = sum(len(data["attachments"]) for data in message_attachments.values())
         
         # Формирование отчёта
-        if not messages_with_attachments:
+        if not message_attachments:
             await ctx.send(f"ℹ️ В период с {start_date} по {end_date} не найдено сообщений с вложениями.")
             return
         
@@ -349,31 +356,39 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
         report_lines = [f"📊 **Отчёт по вложениям** в канале `{channel.name}`"]
         report_lines.append(f"📅 Период: `{start_date} - {end_date}`")
         report_lines.append(f"📎 Всего вложений: **{total_attachments}**")
-        report_lines.append(f"💬 Сообщений с вложениями: **{len(set(m['link'] for m in messages_with_attachments))}**")
+        report_lines.append(f"💬 Сообщений с вложениями: **{total_messages}**")
         report_lines.append("\n🔗 **Ссылки на сообщения с вложениями:**")
         
-        # Добавляем первые 20 записей в отчёт (чтобы не превысить лимит Discord)
-        for data in messages_with_attachments[:20]:
-            report_lines.append(f"[Сообщение]({data['link']}) • **Вложение № {data['attachment_number']}**")
+        # Формируем отчет с группировкой вложений по сообщениям
+        processed_messages = list(message_attachments.values())
         
-        if len(messages_with_attachments) > 20:
-            report_lines.append(f"\nℹ️ Показаны первые 20 из {total_attachments} вложений. Для полного отчёта используйте `!export_attachments`")
+        # Показываем первые 20 сообщений (а не вложений)
+        for i, data in enumerate(processed_messages[:20], 1):
+            attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
+            report_lines.append(f"**{i}.** [{data['link']}]({data['link']}) • **№ {attachment_numbers}**")
+        
+        if len(processed_messages) > 20:
+            report_lines.append(f"\nℹ️ Показаны первые 20 из {total_messages} сообщений с вложениями. Для полного отчёта используйте `!export_attachments`")
         
         report = "\n".join(report_lines)
         await ctx.send(report)
         
         # Сохранение полного отчёта в Google Sheets
-        if messages_with_attachments:
+        if message_attachments:
             values = []
-            for data in messages_with_attachments:
+            for message_id, data in message_attachments.items():
+                # Формируем одну запись для всего сообщения со всеми его вложениями
+                attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
+                attachment_urls = " | ".join(att["url"] for att in data["attachments"])
+                
                 values.append([
                     ctx.guild.name,
                     channel.name,
                     start_date,
                     end_date,
                     data['link'],
-                    data['attachment_url'],
-                    data['attachment_number'],
+                    attachment_urls,
+                    attachment_numbers,
                     data['author'],
                     datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                 ])
@@ -393,7 +408,6 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
                     if "Unable to parse range" in str(e):
                         await ctx.send("❌ Ошибка записи в таблицу: отсутствуют необходимые листы. Бот пытается создать их автоматически...")
                         ensure_sheets_exist(SHEET_ID)
-                        # Повторная попытка записи
                         sheets_service.spreadsheets().values().append(
                             spreadsheetId=SHEET_ID,
                             range="Attachments!A:I",
@@ -404,7 +418,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
                     else:
                         raise e
             
-            await ctx.send(f"✅ Полный отчёт из {total_attachments} вложений сохранён в Google Sheets!")
+            await ctx.send(f"✅ Полный отчёт сохранён в Google Sheets! {total_messages} сообщений с {total_attachments} вложениями.")
     
     except ValueError:
         await ctx.send("❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД (например, 2026-01-15)")
@@ -429,39 +443,56 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
         end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
         
         # Сбор всех вложений
-        all_attachments = []
+        message_attachments = {}
         attachment_number = 1
         
         async for message in channel.history(after=start_dt, before=end_dt, limit=None):
-            if message.author.bot or not message.attachments:
+            if message.author.bot:
                 continue
-            
-            message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
-            for attachment in message.attachments:
-                all_attachments.append([
-                    message_link,
-                    attachment.url,
-                    attachment_number,
-                    str(message.author),
-                    message.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                ])
-                attachment_number += 1
+                
+            if message.attachments:
+                message_link = f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+                
+                if message.id not in message_attachments:
+                    message_attachments[message.id] = {
+                        "link": message_link,
+                        "attachments": [],
+                        "author": str(message.author),
+                        "created_at": message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                
+                for attachment in message.attachments:
+                    message_attachments[message.id]["attachments"].append({
+                        "number": attachment_number,
+                        "url": attachment.url
+                    })
+                    attachment_number += 1
         
-        if not all_attachments:
+        if not message_attachments:
             await ctx.send("ℹ️ Не найдено вложений для экспорта.")
             return
         
         # Генерация CSV файла
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Ссылка на сообщение", "Ссылка на вложение", "№ вложения", "Автор", "Дата"])
-        writer.writerows(all_attachments)
+        writer.writerow(["Ссылка на сообщение", "Ссылки на вложения", "№ вложений", "Автор", "Дата"])
+        
+        for data in message_attachments.values():
+            attachment_numbers = ", ".join(str(att["number"]) for att in data["attachments"])
+            attachment_urls = " | ".join(att["url"] for att in data["attachments"])
+            writer.writerow([
+                data['link'],
+                attachment_urls,
+                attachment_numbers,
+                data['author'],
+                data['created_at']
+            ])
         
         output.seek(0)
         file = discord.File(fp=output, filename=f"attachments_{start_date}_{end_date}.csv")
         
         await ctx.send(
-            f"✅ Экспорт завершён! Найдено {len(all_attachments)} вложений.",
+            f"✅ Экспорт завершён! Найдено {len(message_attachments)} сообщений с {attachment_number-1} вложениями.",
             file=file
         )
         
@@ -478,7 +509,8 @@ async def help_cmd(ctx):
         "→ Анализ общей активности в канале за период\n\n"
         f"**`{COMMAND_PREFIX}attachments #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ] [лимит]`**\n"
         "→ Анализ сообщений с вложениями\n"
-        "→ Лимит по умолчанию: 500 сообщений\n\n"
+        "→ Лимит по умолчанию: 500 сообщений\n"
+        "→ Вложения в одном сообщении группируются под одной ссылкой с номерами через запятую\n\n"
         f"**`{COMMAND_PREFIX}export_attachments #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ]`**\n"
         "→ Экспорт полного отчёта по вложениям в CSV файл\n\n"
         f"**`{COMMAND_PREFIX}help`**\n"
