@@ -10,6 +10,14 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+# === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ПАРСИНГ ДАТЫ В ФОРМАТЕ ДД-ММ-ГГГГ ===
+def parse_date(date_str):
+    """Парсит дату в формате ДД-ММ-ГГГГ"""
+    try:
+        return datetime.datetime.strptime(date_str, "%d-%m-%Y").replace(tzinfo=datetime.timezone.utc)
+    except ValueError as e:
+        raise ValueError(f"Неверный формат даты '{date_str}'. Используйте формат ДД-ММ-ГГГГ (например: 01-01-2026)")
+
 # === ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
 def check_env_vars():
     print("="*60)
@@ -204,20 +212,20 @@ bot = commands.Bot(
 # === КОМАНДА: АНАЛИЗ АКТИВНОСТИ С ТОП-ПОЛЬЗОВАТЕЛЯМИ ===
 @bot.command(name="activity")
 async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
-    """Анализ активности в канале за период. Пример: !activity #чат 01.01.2026 15.01.2026
+    """Анализ активности в канале за период. Пример: !activity #чат 01-01-2026 15-01-2026
     
     💡 Даты могут быть произвольными (например, с понедельника по воскресенье)
     """
     await ctx.send(f"🔄 Запускаю анализ активности в канале {channel.mention}...")
     
     try:
-        # Обработка дат (формат ДД.ММ.ГГГГ)
+        # Обработка дат (формат ДД-ММ-ГГГГ)
         if end_date is None:
-            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y")
+            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y")
             
-        # Парсим даты в формате ДД.ММ.ГГГГ
-        start_dt = datetime.datetime.strptime(start_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc)
-        end_dt = datetime.datetime.strptime(end_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
+        # Парсим даты в формате ДД-ММ-ГГГГ
+        start_dt = parse_date(start_date)
+        end_dt = parse_date(end_date) + datetime.timedelta(days=1)
         
         if start_dt > end_dt:
             await ctx.send("❌ Ошибка: дата начала позже даты окончания!")
@@ -303,7 +311,7 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             len(unique_users),
             images,
             links,
-            datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC")
+            datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC")
         ]]
         
         try:
@@ -329,8 +337,8 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
             else:
                 raise e
         
-    except ValueError:
-        await ctx.send("❌ Ошибка формата даты. Используйте формат ДД.ММ.ГГГГ\nПример: `01.01.2026` или `15.01.2026`")
+    except ValueError as e:
+        await ctx.send(f"❌ Ошибка формата даты: {str(e)}")
     except discord.Forbidden:
         await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Проверьте разрешения в настройках сервера.")
     except Exception as e:
@@ -342,19 +350,19 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
 async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None, limit: int = 500):
     """
     Анализ сообщений с вложениями за период.
-    Пример: !attachments #media 01.01.2026 07.01.2026 500
+    Пример: !attachments #media 01-01-2026 07-01-2026 500
     
     💡 Даты могут быть произвольными (например, с понедельника по воскресенье)
     """
     await ctx.send(f"🔍 Собираю сообщения с вложениями в канале {channel.mention}...")
     
     try:
-        # Обработка дат (формат ДД.ММ.ГГГГ)
+        # Обработка дат (формат ДД-ММ-ГГГГ)
         if end_date is None:
-            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y")
+            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y")
         
-        start_dt = datetime.datetime.strptime(start_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc)
-        end_dt = datetime.datetime.strptime(end_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
+        start_dt = parse_date(start_date)
+        end_dt = parse_date(end_date) + datetime.timedelta(days=1)
         
         if start_dt > end_dt:
             await ctx.send("❌ Ошибка: дата начала позже даты окончания!")
@@ -377,7 +385,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
                         "link": message_link,
                         "attachments": [],
                         "author": str(message.author),
-                        "created_at": message.created_at.strftime("%d.%m.%Y %H:%M")
+                        "created_at": message.created_at.strftime("%d-%m-%Y %H:%M")
                     }
                 
                 # Добавляем каждое вложение к сообщению
@@ -434,7 +442,7 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
                     attachment_urls,
                     attachment_numbers,
                     data['author'],
-                    datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC")
+                    datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC")
                 ])
             
             # Пакетная отправка в Google Sheets
@@ -464,8 +472,8 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
             
             await ctx.send(f"✅ Полный отчёт сохранён в Google Sheets! {total_messages} сообщений с {total_attachments} вложениями.")
     
-    except ValueError:
-        await ctx.send("❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ (например, 01.01.2026)\n💡 Даты могут быть произвольными: понедельник-воскресенье, рабочие дни, любой период")
+    except ValueError as e:
+        await ctx.send(f"❌ {str(e)}\n💡 Даты могут быть произвольными: понедельник-воскресенье, рабочие дни, любой период")
     except discord.Forbidden:
         await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Выдайте права: `Просмотр канала` и `Чтение истории сообщений`")
     except Exception as e:
@@ -477,19 +485,19 @@ async def attachments(ctx, channel: discord.TextChannel, start_date: str, end_da
 async def export_attachments(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
     """Экспорт полного отчёта по вложениям в CSV файл (без ссылок на вложения)
     
-    Пример: !export_attachments #media 01.01.2026 07.01.2026
+    Пример: !export_attachments #media 01-01-2026 07-01-2026
     
     💡 Даты могут быть произвольными (например, с понедельника по воскресенье)
     """
     await ctx.send(f"💾 Готовлю полный экспорт вложений из канала {channel.mention}...")
     
     try:
-        # Обработка дат (формат ДД.ММ.ГГГГ)
+        # Обработка дат (формат ДД-ММ-ГГГГ)
         if end_date is None:
-            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m.%Y")
+            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y")
         
-        start_dt = datetime.datetime.strptime(start_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc)
-        end_dt = datetime.datetime.strptime(end_date, "%d.%m.%Y").replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
+        start_dt = parse_date(start_date)
+        end_dt = parse_date(end_date) + datetime.timedelta(days=1)
         
         # Сбор всех вложений
         message_attachments = {}
@@ -507,7 +515,7 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
                         "link": message_link,
                         "attachments": [],
                         "author": str(message.author),
-                        "created_at": message.created_at.strftime("%d.%m.%Y %H:%M:%S")
+                        "created_at": message.created_at.strftime("%d-%m-%Y %H:%M:%S")
                     }
                 
                 for attachment in message.attachments:
@@ -538,13 +546,15 @@ async def export_attachments(ctx, channel: discord.TextChannel, start_date: str,
             ])
         
         output.seek(0)
-        file = discord.File(fp=output, filename=f"attachments_{start_date}_{end_date}.csv")
+        file = discord.File(fp=output, filename=f"attachments_{start_date.replace('-', '')}_{end_date.replace('-', '')}.csv")
         
         await ctx.send(
             f"✅ Экспорт завершён! Найдено {len(message_attachments)} сообщений с {attachment_number-1} вложениями.",
             file=file
         )
         
+    except ValueError as e:
+        await ctx.send(f"❌ {str(e)}")
     except Exception as e:
         await ctx.send(f"❌ Ошибка при экспорте: {str(e)}")
 
@@ -554,25 +564,25 @@ async def help_cmd(ctx):
     """Показать справку по командам"""
     help_text = (
         "**🤖 Справка по командам бота**\n\n"
-        f"**`{COMMAND_PREFIX}activity #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ]`**\n"
+        f"**`{COMMAND_PREFIX}activity #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
         "→ Анализ общей активности в канале за период\n"
         "→ Если вторая дата не указана, анализ до текущего дня\n"
         "→ Включает ТОП-10 пользователей по сообщениям и вложениям\n\n"
         
-        f"**`{COMMAND_PREFIX}attachments #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ] [лимит]`**\n"
+        f"**`{COMMAND_PREFIX}attachments #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ] [лимит]`**\n"
         "→ Анализ сообщений с вложениями\n"
         "→ Лимит по умолчанию: 500 сообщений\n"
         "→ Вложения в одном сообщении группируются под одной ссылкой\n\n"
         
-        f"**`{COMMAND_PREFIX}export_attachments #канал ДД.ММ.ГГГГ [ДД.ММ.ГГГГ]`**\n"
+        f"**`{COMMAND_PREFIX}export_attachments #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
         "→ Экспорт полного отчёта по вложениям в CSV файл (без ссылок на вложения)\n\n"
         
         "**📅 Формат даты:**\n"
-        "→ Используйте формат **ДД.ММ.ГГГГ** (например: `01.01.2026`)\n"
+        "→ Используйте формат **ДД-ММ-ГГГГ** (например: `01-01-2026`)\n"
         "→ Даты могут быть **произвольными**:\n"
         "  • Рабочая неделя (понедельник-пятница)\n"
         "  • Полная неделя (понедельник-воскресенье)\n"
-        "  • Любой другой период (например, 15.01.2026-19.01.2026)\n\n"
+        "  • Любой другой период (например, 15-01-2026 по 19-01-2026)\n\n"
         
         "**📋 Требования для работы:**\n"
         "• У бота должны быть права: `Просмотр канала`, `Чтение истории сообщений`, `Отправка сообщений`\n"
