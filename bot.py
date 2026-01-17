@@ -241,23 +241,6 @@ def has_senior_role():
         return True
     return commands.check(predicate)
 
-# === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ПРОВЕРКА РОЛИ ДЛЯ КОМАНД БЕЗ КОНТЕКСТА ===
-def check_senior_role(ctx):
-    """Функция для ручной проверки роли"""
-    senior_role = None
-    for role in ctx.guild.roles:
-        if role.name.lower() == SENIOR_ROLE_NAME.lower():
-            senior_role = role
-            break
-    
-    if senior_role is None:
-        return False, f"❌ Роль '{SENIOR_ROLE_NAME}' не найдена на этом сервере. Свяжитесь с администратором."
-        
-    if senior_role not in ctx.author.roles:
-        return False, f"❌ У вас нет прав для использования этой команды. Требуется роль `{SENIOR_ROLE_NAME}`"
-    
-    return True, ""
-
 # === КОМАНДА: АНАЛИЗ АКТИВНОСТИ С ТОП-ПОЛЬЗОВАТЕЛЯМИ (ТОЛЬКО ИЗОБРАЖЕНИЯ) ===
 @bot.command(name="activity")
 @has_senior_role()  # Применяем проверку роли
@@ -488,7 +471,8 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
         # Показываем первые 20 сообщений (а не изображений)
         for i, data in enumerate(processed_messages[:20], 1):
             image_numbers = ", ".join(str(img["number"]) for img in data["images"])
-            report_lines.append(f"**{i}.** [{data['link']}]({data['link']}) • № {image_numbers} • **{data['author']}**")
+            # ИСПРАВЛЕНО: убрано дублирование ссылок
+            report_lines.append(f"**{i}.** {data['link']} • № {image_numbers} • **{data['author']}**")
         
         if len(processed_messages) > 20:
             report_lines.append(f"\nℹ️ Показаны первые 20 из {total_messages} сообщений с изображениями. Для полного отчёта используйте `!export_images`")
