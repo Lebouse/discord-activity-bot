@@ -6,14 +6,14 @@ from discord.ext import commands
 import datetime
 import csv
 import io
-import re  # Добавлен импорт для регулярных выражений
-import gc  # Добавлен импорт для сборки мусора
+import re
+import gc
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # === ВЕРСИЯ БОТА ===
-BOT_VERSION = "1.2.1"  # Обновлено: исправлены критические ошибки и добавлены новые функции
+BOT_VERSION = "1.2.2"
 
 # === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ЭКРАНИРОВАНИЕ ЗНАЧЕНИЙ ДЛЯ GOOGLE SHEETS ===
 def sanitize_value(value):
@@ -81,7 +81,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
-SENIOR_ROLE_NAME = os.getenv("SENIOR_ROLE_NAME", "Старший состав ФСВНГ")  # Название роли для доступа
+SENIOR_ROLE_NAME = os.getenv("SENIOR_ROLE_NAME", "Старший состав ФСВНГ")
 
 # === НАСТРОЙКА GOOGLE SHEETS ===
 try:
@@ -156,7 +156,7 @@ def ensure_sheets_exist(spreadsheet_id):
             "Activity": [
                 ["Сервер", "Канал", "Дата начала", "Дата окончания", "Сообщений", "Уникальных пользователей", "Изображений", "Ссылок", "Время"]
             ],
-            "Images": [  # Изменено название листа с "Attachments" на "Images"
+            "Images": [
                 ["Сервер", "Канал", "Дата начала", "Дата окончания", "Ссылка на сообщение", "Ссылки на изображения", "№ изображений", "Автор", "Время экспорта"]
             ],
             "StaffAnalysis": [
@@ -234,7 +234,6 @@ def is_image(attachment):
     if not attachment.content_type:
         return False
     content_type = attachment.content_type.lower()
-    # ИСПРАВЛЕНО: убрано неправильное определение ZIP-архивов как изображений
     return content_type.startswith('image/') or content_type == 'application/octet-stream'
 
 # === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ПРОВЕРКА РОЛИ ===
@@ -262,13 +261,9 @@ def has_senior_role():
 
 # === КОМАНДА: АНАЛИЗ АКТИВНОСТИ С ТОП-ПОЛЬЗОВАТЕЛЯМИ (ТОЛЬКО ИЗОБРАЖЕНИЯ) ===
 @bot.command(name="activity")
-@has_senior_role()  # Применяем проверку роли
+@has_senior_role()
 async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
-    """Анализ активности в канале за период. Пример: !activity #чат 01-01-2026 15-01-2026
-    
-    💡 Бот анализирует ТОЛЬКО изображения (jpg, png, gif), игнорируя документы, видео и другие файлы
-    💡 Доступно только пользователям с ролью @Старший состав ФСВНГ
-    """
+    """Анализ активности в канале за период. Пример: !activity #чат 01-01-2026 15-01-2026"""
     await ctx.send(f"🔄 Запускаю анализ активности в канале {channel.mention}...")
     
     try:
@@ -287,14 +282,14 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         # Сбор статистики
         message_count = 0
         unique_users = {}  # {user_id: display_name}
-        images = 0  # Теперь считаем только изображения
+        images = 0
         links = 0
         
         # Словари для сбора статистики по пользователям
         user_messages = {}  # {user_id: количество сообщений}
         user_images = {}    # {user_id: количество изображений}
         
-        # ИСПРАВЛЕНО: добавлен лимит для безопасности
+        # Добавлен лимит для безопасности
         async for message in channel.history(after=start_dt, before=end_dt, limit=10000):
             if message.author.bot:
                 continue
@@ -358,7 +353,6 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         
         # Отправка отчета (разбиваем на части если превышает лимит)
         if len(report) > 1900:
-            # Делим отчет на части
             parts = [report[i:i+1900] for i in range(0, len(report), 1900)]
             for part in parts:
                 await ctx.send(part)
@@ -399,7 +393,6 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
                 ).execute()
                 await ctx.send("✅ Листы созданы и данные сохранены!")
             else:
-                # ИСПРАВЛЕНО: добавлено подробное логирование ошибок
                 error_content = json.loads(e.content.decode('utf-8')) if hasattr(e, 'content') else str(e)
                 print(f"Google Sheets API error: {error_content}")
                 print(f"Request details: {e.uri}")
@@ -413,19 +406,15 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         await ctx.send(f"⚠️ Критическая ошибка: `{str(e)}`")
         print(f"\n🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ В КОМАНДЕ activity: {e}")
     finally:
-        # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
         gc.collect()
 
-# === КОМАНДА: АНАЛИЗ ИЗОБРАЖЕНИЙ С ГРУППИРОВКОЙ (ИСПРАВЛЕННАЯ) ===
+# === КОМАНДА: АНАЛИЗ ИЗОБРАЖЕНИЙ С ГРУППИРОВКОЙ ===
 @bot.command(name="images")
-@has_senior_role()  # Применяем проверку роли
+@has_senior_role()
 async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None, limit: int = 500):
     """
     Анализ сообщений с изображениями за период.
     Пример: !images #media 01-01-2026 07-01-2026 500
-    
-    💡 Бот анализирует ТОЛЬКО изображения (jpg, png, gif), игнорируя документы, видео и другие файлы
-    💡 Доступно только пользователям с ролью @Старший состав ФСВНГ
     """
     await ctx.send(f"🔍 Собираю сообщения с изображениями в канале {channel.mention}...")
     
@@ -445,7 +434,7 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
         message_images = {}  # {message_id: {"link": str, "images": [{"number": int, "url": str}], "author": str, "created_at": str}}
         image_number = 1
         
-        # ИСПРАВЛЕНО: добавлен лимит для безопасности
+        # Добавлен лимит для безопасности
         async for message in channel.history(after=start_dt, before=end_dt, limit=10000):
             if message.author.bot:
                 continue
@@ -558,14 +547,14 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
                     sanitize_value(datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC"))
                 ])
             
-            # Пакетная отправка в Google Sheets (теперь в лист Images)
+            # Пакетная отправка в Google Sheets
             batch_size = 1000
             for i in range(0, len(values), batch_size):
                 batch = values[i:i+batch_size]
                 try:
                     sheets_service.spreadsheets().values().append(
                         spreadsheetId=SHEET_ID,
-                        range="Images!A:I",  # Используем лист Images вместо Attachments
+                        range="Images!A:I",
                         valueInputOption="USER_ENTERED",
                         body={"values": batch}
                     ).execute()
@@ -581,7 +570,6 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
                         ).execute()
                         await ctx.send("✅ Листы созданы и данные сохранены!")
                     else:
-                        # ИСПРАВЛЕНО: добавлено подробное логирование ошибок
                         error_content = json.loads(e.content.decode('utf-8')) if hasattr(e, 'content') else str(e)
                         print(f"Google Sheets API error: {error_content}")
                         print(f"Request details: {e.uri}")
@@ -597,19 +585,15 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
         await ctx.send(f"⚠️ Ошибка при обработке: `{str(e)}`")
         print(f"\n🔥 ОШИБКА В КОМАНДЕ images: {e}")
     finally:
-        # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
         gc.collect()
 
 # === КОМАНДА: ЭКСПОРТ ИЗОБРАЖЕНИЙ В CSV С СОХРАНЕНИЕМ В GOOGLE SHEETS ===
 @bot.command(name="export_images")
-@has_senior_role()  # Применяем проверку роли
+@has_senior_role()
 async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
     """Экспорт полного отчёта по изображениям в CSV файл и сохранение в Google Sheets
     
     Пример: !export_images #media 01-01-2026 07-01-2026
-    
-    💡 Бот анализирует ТОЛЬКО изображения (jpg, png, gif), игнорируя документы, видео и другие файлы
-    💡 Доступно только пользователям с ролью @Старший состав ФСВНГ
     """
     await ctx.send(f"💾 Готовлю полный экспорт изображений из канала {channel.mention}...")
     
@@ -625,7 +609,7 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
         message_images = {}
         image_number = 1
         
-        # ИСПРАВЛЕНО: добавлен лимит для безопасности
+        # Добавлен лимит для безопасности
         async for message in channel.history(after=start_dt, before=end_dt, limit=10000):
             if message.author.bot:
                 continue
@@ -645,7 +629,7 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
                 message_images[message.id] = {
                     "link": message_link,
                     "images": [],
-                    "author": str(message.author.display_name),  # Используем отображаемое имя
+                    "author": str(message.author.display_name),
                     "created_at": message.created_at.strftime("%d-%m-%Y %H:%M:%S")
                 }
             
@@ -685,13 +669,13 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
                     sanitize_value(datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC"))
                 ])
             
-            # Пакетная отправка в Google Sheets (теперь в лист Images)
+            # Пакетная отправка в Google Sheets
             batch_size = 1000
             for i in range(0, len(values), batch_size):
                 batch = values[i:i+batch_size]
                 sheets_service.spreadsheets().values().append(
                     spreadsheetId=SHEET_ID,
-                    range="Images!A:I",  # Используем лист Images вместо Attachments
+                    range="Images!A:I",
                     valueInputOption="USER_ENTERED",
                     body={"values": batch}
                 ).execute()
@@ -713,7 +697,6 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
                     ).execute()
                 await ctx.send("✅ Листы созданы и данные сохранены!")
             else:
-                # ИСПРАВЛЕНО: добавлено подробное логирование ошибок
                 error_content = json.loads(e.content.decode('utf-8')) if hasattr(e, 'content') else str(e)
                 print(f"Google Sheets API error: {error_content}")
                 print(f"Request details: {e.uri}")
@@ -721,8 +704,8 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
                 print(f"Google Sheets error: {e}")
         
         # === ГЕНЕРАЦИЯ CSV ФАЙЛА ===
-        # ИСПРАВЛЕНО: добавлена правильная обработка кодировки
-        output = io.StringIO(newline='', encoding='utf-8')
+        # ИСПРАВЛЕНО: убран неверный параметр encoding
+        output = io.StringIO(newline='')
         writer = csv.writer(output)
         writer.writerow(["Ссылка на сообщение", "№ изображений", "Автор", "Дата"])
         
@@ -750,23 +733,15 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
         await ctx.send(f"❌ Ошибка при экспорте: {str(e)}")
         print(f"\n🔥 ОШИБКА В КОМАНДЕ export_images: {e}")
     finally:
-        # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
         gc.collect()
 
-# === КОМАНДА: АНАЛИЗ КАДРОВЫХ СООБЩЕНИЙ (ОБНОВЛЕННАЯ) ===
+# === КОМАНДА: АНАЛИЗ КАДРОВЫХ СООБЩЕНИЙ ===
 @bot.command(name="staff_analysis")
-@has_senior_role()  # Применяем проверку роли
+@has_senior_role()
 async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
     """
     Анализ сообщений о кадровых изменениях (принят/уволен/повышен) за период.
     Пример: !staff_analysis #personnel 01-01-2026 07-01-2026
-    
-    💡 Бот анализирует сообщения, содержащие слова:
-        - "принят", "трудоустроен" и т.д. (прием на работу)
-        - "уволен", "увольнение" и т.д. (увольнения)
-        - "повышен", "получил звание" и т.д. (повышения в звании)
-    💡 Отображает ТОП-10 авторов по каждому типу сообщений
-    💡 Доступно только пользователям с ролью @Старший состав ФСВНГ
     """
     await ctx.send(f"🔄 Запускаю анализ кадровых сообщений в канале {channel.mention}...")
     
@@ -783,21 +758,21 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
             return
         
         # Ключевые слова для поиска
-        hired_keywords = ["принят", "принята", "принято", "принят(а)", "приняты", "оформлен", "оформлена", "трудоустроен", "трудоустроена", "принял контракт", "заключил контракт"]
-        fired_keywords = ["уволен", "уволена", "уволено", "уволен(а)", "уволены", "увольнение", "уволен по собственному", "уволен за нарушение", "расторг контракт", "прекратил контракт"]
+        hired_keywords = ["принят", "принята", "принято", "приняты", "оформлен", "оформлена", "трудоустроен", "трудоустроена", "принял контракт", "заключил контракт"]
+        fired_keywords = ["уволен", "уволена", "уволено", "уволены", "увольнение", "уволен по собственному", "уволен за нарушение", "расторг контракт", "прекратил контракт"]
         promoted_keywords = ["повышен", "повышение", "получил звание", "награжден званием", "присвоено звание", "повышен в звании", "предоставлено звание", "награжден повышением", "присвоено очередное звание", "награжден званием"]
         
         # Словари для сбора статистики
-        hired_messages = []    # Список сообщений о приеме
-        fired_messages = []    # Список сообщений об увольнениях
-        promoted_messages = [] # Список сообщений о повышениях
+        hired_messages = []
+        fired_messages = []
+        promoted_messages = []
         
-        hired_authors = {}     # {author: количество сообщений}
-        fired_authors = {}     # {author: количество сообщений}
-        promoted_authors = {}  # {author: количество сообщений}
+        hired_authors = {}
+        fired_authors = {}
+        promoted_authors = {}
         
         # Сбор данных
-        # ИСПРАВЛЕНО: добавлен лимит для безопасности
+        # Добавлен лимит для безопасности
         async for message in channel.history(after=start_dt, before=end_dt, limit=10000):
             if message.author.bot:
                 continue
@@ -805,12 +780,9 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
             content_lower = message.content.lower()
             display_name = str(message.author.display_name)
             
-            # ИСПРАВЛЕНО: используется поиск целых слов с помощью регулярных выражений
-            # Анализ сообщений о приеме
+            # Используется поиск целых слов с помощью регулярных выражений
             is_hired = any(re.search(rf'\b{re.escape(keyword)}\b', content_lower) for keyword in hired_keywords)
-            # Анализ сообщений об увольнениях 
             is_fired = any(re.search(rf'\b{re.escape(keyword)}\b', content_lower) for keyword in fired_keywords)
-            # Анализ сообщений о повышениях (НОВОЕ)
             is_promoted = any(re.search(rf'\b{re.escape(keyword)}\b', content_lower) for keyword in promoted_keywords)
             
             message_info = {
@@ -828,7 +800,7 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
                 fired_messages.append(message_info)
                 fired_authors[display_name] = fired_authors.get(display_name, 0) + 1
             
-            # Обработка повышений (НОВОЕ)
+            # Обработка повышений
             if is_promoted:
                 promoted_messages.append(message_info)
                 promoted_authors[display_name] = promoted_authors.get(display_name, 0) + 1
@@ -844,13 +816,13 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
             "\n❌ **Сообщения об увольнениях:**",
             f"   • Всего сообщений: **{len(fired_messages)}**",
             f"   • Уникальных авторов: **{len(fired_authors)}**",
-            "\n🔼 **Сообщения о повышениях (НОВОЕ):**",  # Новая секция
+            "\n🔼 **Сообщения о повышениях:**",
             f"   • Всего сообщений: **{len(promoted_messages)}**",
             f"   • Уникальных авторов: **{len(promoted_authors)}**",
             "\n🏆 **ТОП-10 авторов сообщений о приеме:**"
         ]
         
-        # ТОП-10 авторов по приему (расширено с 5 до 10)
+        # ТОП-10 авторов по приему
         top_hired = sorted(hired_authors.items(), key=lambda x: x[1], reverse=True)[:10]
         if top_hired:
             for i, (author, count) in enumerate(top_hired, 1):
@@ -858,7 +830,7 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
         else:
             report_lines.append("ℹ️ Нет сообщений о приеме на работу")
         
-        # ТОП-10 авторов по увольнениям (расширено с 5 до 10)
+        # ТОП-10 авторов по увольнениям
         report_lines.append("\n🔥 **ТОП-10 авторов сообщений об увольнениях:**")
         top_fired = sorted(fired_authors.items(), key=lambda x: x[1], reverse=True)[:10]
         if top_fired:
@@ -867,7 +839,7 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
         else:
             report_lines.append("ℹ️ Нет сообщений об увольнениях")
         
-        # ТОП-10 авторов по повышениям (НОВОЕ, расширено до 10)
+        # ТОП-10 авторов по повышениям
         report_lines.append("\n⭐ **ТОП-10 авторов сообщений о повышениях:**")
         top_promoted = sorted(promoted_authors.items(), key=lambda x: x[1], reverse=True)[:10]
         if top_promoted:
@@ -878,7 +850,7 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
         
         report = "\n".join(report_lines)
         
-        # ИСПРАВЛЕНО: добавлена пагинация для длинных отчетов
+        # Добавлена пагинация для длинных отчетов
         if len(report) > 1900:
             parts = [report[i:i+1900] for i in range(0, len(report), 1900)]
             for part in parts:
@@ -891,9 +863,7 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
         
         # Данные по приему
         if hired_messages:
-            # Берем ТОП-3 авторов для сохранения в таблицу (чтобы не было слишком длинных строк)
             top_hired_authors = ", ".join([f"{author} ({count})" for author, count in top_hired][:3])
-            # ИСПРАВЛЕНО: добавлено экранирование значений
             values.append([
                 sanitize_value(ctx.guild.name),
                 sanitize_value(channel.name),
@@ -909,7 +879,6 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
         # Данные по увольнениям
         if fired_messages:
             top_fired_authors = ", ".join([f"{author} ({count})" for author, count in top_fired][:3])
-            # ИСПРАВЛЕНО: добавлено экранирование значений
             values.append([
                 sanitize_value(ctx.guild.name),
                 sanitize_value(channel.name),
@@ -922,7 +891,7 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
                 sanitize_value(datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC"))
             ])
         
-        # Данные по повышениям (НОВОЕ)
+        # Данные по повышениям
         if promoted_messages:
             top_promoted_authors = ", ".join([f"{author} ({count})" for author, count in top_promoted][:3])
             values.append([
@@ -959,7 +928,6 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
                     ).execute()
                     await ctx.send("✅ Листы созданы и данные сохранены!")
                 else:
-                    # ИСПРАВЛЕНО: добавлено подробное логирование ошибок
                     error_content = json.loads(e.content.decode('utf-8')) if hasattr(e, 'content') else str(e)
                     print(f"Google Sheets API error: {error_content}")
                     print(f"Request details: {e.uri}")
@@ -973,12 +941,11 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
         await ctx.send(f"⚠️ Критическая ошибка: `{str(e)}`")
         print(f"\n🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ В КОМАНДЕ staff_analysis: {e}")
     finally:
-        # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
         gc.collect()
 
 # === КОМАНДА: СПРАВКА ===
 @bot.command(name="help")
-@has_senior_role()  # Применяем проверку роли
+@has_senior_role()
 async def help_cmd(ctx):
     """Показать справку по командам"""
     help_text = (
@@ -1064,8 +1031,6 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send("❌ Недостаточно аргументов. Проверьте синтаксис команды через `!help`")
     elif isinstance(error, commands.CheckFailure):
-        # Эта ошибка возникает при провале проверки @has_senior_role()
-        # Но мы уже обрабатываем её внутри функции, поэтому ничего не делаем
         pass
     else:
         print(f"\n⚠️ ОШИБКА ПРИ ВЫПОЛНЕНИИ КОМАНДЫ: {error}")
