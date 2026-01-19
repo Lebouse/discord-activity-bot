@@ -6,18 +6,29 @@ from discord.ext import commands
 import datetime
 import csv
 import io
+import re  # Добавлен импорт для регулярных выражений
+import gc  # Добавлен импорт для сборки мусора
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # === ВЕРСИЯ БОТА ===
-BOT_VERSION = "1.1.0"  # Обновляйте версию при каждой доработке
+BOT_VERSION = "1.2.1"  # Обновлено: исправлены критические ошибки
+
+# === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ЭКРАНИРОВАНИЕ ЗНАЧЕНИЙ ДЛЯ GOOGLE SHEETS ===
+def sanitize_value(value):
+    """Экранирует значение для Google Sheets"""
+    if value is None:
+        return ""
+    return str(value).replace('\n', ' ').replace('\r', ' ').strip()
 
 # === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ПАРСИНГ ДАТЫ В ФОРМАТЕ ДД-ММ-ГГГГ ===
 def parse_date(date_str):
     """Парсит дату в формате ДД-ММ-ГГГГ"""
+    if not date_str or not date_str.strip():
+        raise ValueError("Дата не может быть пустой")
     try:
-        return datetime.datetime.strptime(date_str, "%d-%m-%Y").replace(tzinfo=datetime.timezone.utc)
+        return datetime.datetime.strptime(date_str.strip(), "%d-%m-%Y").replace(tzinfo=datetime.timezone.utc)
     except ValueError as e:
         raise ValueError(f"Неверный формат даты '{date_str}'. Используйте формат ДД-ММ-ГГГГ (например: 01-01-2026)")
 
@@ -147,6 +158,9 @@ def ensure_sheets_exist(spreadsheet_id):
             ],
             "Images": [  # Изменено название листа с "Attachments" на "Images"
                 ["Сервер", "Канал", "Дата начала", "Дата окончания", "Ссылка на сообщение", "Ссылки на изображения", "№ изображений", "Автор", "Время экспорта"]
+            ],
+            "StaffAnalysis": [
+                ["Сервер", "Канал", "Дата начала", "Дата окончания", "Тип", "Сообщений", "Уникальных авторов", "ТОП авторы", "Время"]
             ]
         }
         
@@ -195,6 +209,7 @@ def ensure_sheets_exist(spreadsheet_id):
         print("💡 Совет: Создайте листы вручную в Google Таблице:")
         print("   - Лист 'Activity' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Сообщений, Уникальных пользователей, Изображений, Ссылок, Время")
         print("   - Лист 'Images' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Ссылка на сообщение, Ссылки на изображения, № изображений, Автор, Время экспорта")
+        print("   - Лист 'StaffAnalysis' с заголовками: Сервер, Канал, Дата начала, Дата окончания, Тип, Сообщений, Уникальных авторов, ТОП авторы, Время")
 
 # === НАСТРОЙКА ЛИСТОВ ПРИ ЗАПУСКЕ ===
 print("\n🔧 ПРОВЕРКА ЛИСТОВ В GOOGLE ТАБЛИЦЕ...")
@@ -219,7 +234,8 @@ def is_image(attachment):
     if not attachment.content_type:
         return False
     content_type = attachment.content_type.lower()
-    return content_type.startswith('image/') or content_type in ['application/octet-stream', 'application/x-zip-compressed']
+    # ИСПРАВЛЕНО: убрано неправильное определение ZIP-архивов как изображений
+    return content_type.startswith('image/') or content_type == 'application/octet-stream'
 
 # === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ПРОВЕРКА РОЛИ ===
 def has_senior_role():
@@ -278,7 +294,8 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         user_messages = {}  # {user_id: количество сообщений}
         user_images = {}    # {user_id: количество изображений}
         
-        async for message in channel.history(after=start_dt, before=end_dt, limit=None):
+        # ИСПРАВЛЕНО: добавлен лимит для безопасности
+        async for message in channel.history(after=start_dt, before=end_dt, limit=10000):
             if message.author.bot:
                 continue
                 
@@ -382,7 +399,11 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
                 ).execute()
                 await ctx.send("✅ Листы созданы и данные сохранены!")
             else:
-                raise e
+                # ИСПРАВЛЕНО: добавлено подробное логирование ошибок
+                error_content = json.loads(e.content.decode('utf-8')) if hasattr(e, 'content') else str(e)
+                print(f"Google Sheets API error: {error_content}")
+                print(f"Request details: {e.uri}")
+                await ctx.send(f"⚠️ Ошибка при сохранении в Google Sheets: {str(e)}")
         
     except ValueError as e:
         await ctx.send(f"❌ Ошибка формата даты: {str(e)}")
@@ -391,6 +412,9 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
     except Exception as e:
         await ctx.send(f"⚠️ Критическая ошибка: `{str(e)}`")
         print(f"\n🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ В КОМАНДЕ activity: {e}")
+    finally:
+        # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
+        gc.collect()
 
 # === КОМАНДА: АНАЛИЗ ИЗОБРАЖЕНИЙ С ГРУППИРОВКОЙ ===
 @bot.command(name="images")
@@ -421,7 +445,8 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
         message_images = {}  # {message_id: {"link": str, "images": [{"number": int, "url": str}], "author": str, "created_at": str}}
         image_number = 1
         
-        async for message in channel.history(after=start_dt, before=end_dt, limit=limit):
+        # ИСПРАВЛЕНО: добавлен лимит для безопасности
+        async for message in channel.history(after=start_dt, before=end_dt, limit=10000):
             if message.author.bot:
                 continue
                 
@@ -491,16 +516,17 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
                 image_numbers = ", ".join(str(img["number"]) for img in data["images"])
                 image_urls = " | ".join(img["url"] for img in data["images"])
                 
+                # ИСПРАВЛЕНО: добавлено экранирование значений
                 values.append([
-                    ctx.guild.name,
-                    channel.name,
-                    start_date,
-                    end_date,
-                    data['link'],
-                    image_urls,
-                    image_numbers,
-                    data['author'],
-                    datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC")
+                    sanitize_value(ctx.guild.name),
+                    sanitize_value(channel.name),
+                    sanitize_value(start_date),
+                    sanitize_value(end_date),
+                    sanitize_value(data['link']),
+                    sanitize_value(image_urls),
+                    sanitize_value(image_numbers),
+                    sanitize_value(data['author']),
+                    sanitize_value(datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC"))
                 ])
             
             # Пакетная отправка в Google Sheets (теперь в лист Images)
@@ -526,7 +552,11 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
                         ).execute()
                         await ctx.send("✅ Листы созданы и данные сохранены!")
                     else:
-                        raise e
+                        # ИСПРАВЛЕНО: добавлено подробное логирование ошибок
+                        error_content = json.loads(e.content.decode('utf-8')) if hasattr(e, 'content') else str(e)
+                        print(f"Google Sheets API error: {error_content}")
+                        print(f"Request details: {e.uri}")
+                        await ctx.send(f"⚠️ Ошибка при сохранении в Google Sheets: {str(e)}")
             
             await ctx.send(f"✅ Полный отчёт сохранён в Google Sheets! {total_messages} сообщений с {total_images} изображениями.")
     
@@ -537,6 +567,9 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
     except Exception as e:
         await ctx.send(f"⚠️ Ошибка при обработке: `{str(e)}`")
         print(f"\n🔥 ОШИБКА В КОМАНДЕ images: {e}")
+    finally:
+        # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
+        gc.collect()
 
 # === КОМАНДА: ЭКСПОРТ ИЗОБРАЖЕНИЙ В CSV С СОХРАНЕНИЕМ В GOOGLE SHEETS ===
 @bot.command(name="export_images")
@@ -563,7 +596,8 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
         message_images = {}
         image_number = 1
         
-        async for message in channel.history(after=start_dt, before=end_dt, limit=None):
+        # ИСПРАВЛЕНО: добавлен лимит для безопасности
+        async for message in channel.history(after=start_dt, before=end_dt, limit=10000):
             if message.author.bot:
                 continue
                 
@@ -609,16 +643,17 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
                 image_numbers = ", ".join(str(img["number"]) for img in data["images"])
                 image_urls = " | ".join(img["url"] for img in data["images"])
                 
+                # ИСПРАВЛЕНО: добавлено экранирование значений
                 values.append([
-                    ctx.guild.name,
-                    channel.name,
-                    start_date,
-                    end_date,
-                    data['link'],
-                    image_urls,
-                    image_numbers,
-                    data['author'],
-                    datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC")
+                    sanitize_value(ctx.guild.name),
+                    sanitize_value(channel.name),
+                    sanitize_value(start_date),
+                    sanitize_value(end_date),
+                    sanitize_value(data['link']),
+                    sanitize_value(image_urls),
+                    sanitize_value(image_numbers),
+                    sanitize_value(data['author']),
+                    sanitize_value(datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC"))
                 ])
             
             # Пакетная отправка в Google Sheets (теперь в лист Images)
@@ -649,11 +684,16 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
                     ).execute()
                 await ctx.send("✅ Листы созданы и данные сохранены!")
             else:
+                # ИСПРАВЛЕНО: добавлено подробное логирование ошибок
+                error_content = json.loads(e.content.decode('utf-8')) if hasattr(e, 'content') else str(e)
+                print(f"Google Sheets API error: {error_content}")
+                print(f"Request details: {e.uri}")
                 await ctx.send(f"⚠️ Ошибка при сохранении в Google Sheets: {str(e)}")
                 print(f"Google Sheets error: {e}")
         
         # === ГЕНЕРАЦИЯ CSV ФАЙЛА ===
-        output = io.StringIO()
+        # ИСПРАВЛЕНО: добавлена правильная обработка кодировки
+        output = io.StringIO(newline='')
         writer = csv.writer(output)
         writer.writerow(["Ссылка на сообщение", "№ изображений", "Автор", "Дата"])
         
@@ -680,6 +720,193 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
     except Exception as e:
         await ctx.send(f"❌ Ошибка при экспорте: {str(e)}")
         print(f"\n🔥 ОШИБКА В КОМАНДЕ export_images: {e}")
+    finally:
+        # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
+        gc.collect()
+
+# === КОМАНДА: АНАЛИЗ КАДРОВЫХ СООБЩЕНИЙ (ИСПРАВЛЕНА) ===
+@bot.command(name="staff_analysis")
+@has_senior_role()  # Применяем проверку роли
+async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
+    """
+    Анализ сообщений о кадровых изменениях (принят/уволен) за период.
+    Пример: !staff_analysis #personnel 01-01-2026 07-01-2026
+    
+    💡 Бот анализирует сообщения, содержащие слова "принят" и "уволен"
+    💡 Отображает ТОП авторов по каждому типу сообщений
+    💡 Доступно только пользователям с ролью @Старший состав ФСВНГ
+    """
+    await ctx.send(f"🔄 Запускаю анализ кадровых сообщений в канале {channel.mention}...")
+    
+    try:
+        # Обработка дат (формат ДД-ММ-ГГГГ)
+        if end_date is None:
+            end_date = datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y")
+        
+        start_dt = parse_date(start_date)
+        end_dt = parse_date(end_date) + datetime.timedelta(days=1)
+        
+        if start_dt > end_dt:
+            await ctx.send("❌ Ошибка: дата начала позже даты окончания!")
+            return
+        
+        # Ключевые слова для поиска
+        hired_keywords = ["принят", "принята", "принято", "принят(а)", "приняты", "оформлен", "оформлена", "трудоустроен", "трудоустроена"]
+        fired_keywords = ["уволен", "уволена", "уволено", "уволен(а)", "уволены", "увольнение", "уволен по собственному", "уволен за нарушение"]
+        
+        # Словари для сбора статистики
+        hired_messages = []  # Список сообщений о приеме
+        fired_messages = []  # Список сообщений об увольнении
+        
+        hired_authors = {}  # {author_id: количество сообщений}
+        fired_authors = {}  # {author_id: количество сообщений}
+        
+        # Сбор данных
+        # ИСПРАВЛЕНО: добавлен лимит для безопасности
+        async for message in channel.history(after=start_dt, before=end_dt, limit=10000):
+            if message.author.bot:
+                continue
+            
+            content_lower = message.content.lower()
+            author_id = str(message.author.id)
+            display_name = str(message.author.display_name)
+            
+            # ИСПРАВЛЕНО: используется поиск целых слов с помощью регулярных выражений
+            is_hired = any(re.search(rf'\b{re.escape(keyword)}\b', content_lower) for keyword in hired_keywords)
+            is_fired = any(re.search(rf'\b{re.escape(keyword)}\b', content_lower) for keyword in fired_keywords)
+            
+            if is_hired:
+                hired_messages.append({
+                    "content": message.content,
+                    "author": display_name,
+                    "created_at": message.created_at.strftime("%d-%m-%Y %H:%M"),
+                    "link": f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+                })
+                hired_authors[display_name] = hired_authors.get(display_name, 0) + 1
+            
+            if is_fired:
+                fired_messages.append({
+                    "content": message.content,
+                    "author": display_name,
+                    "created_at": message.created_at.strftime("%d-%m-%Y %H:%M"),
+                    "link": f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+                })
+                fired_authors[display_name] = fired_authors.get(display_name, 0) + 1
+        
+        # Формирование отчета
+        report_lines = [
+            f"📊 **Отчет по кадровым сообщениям**",
+            f"📅 Период: `{start_date} - {end_date}`",
+            f"📈 Канал: `{channel.name}`",
+            "\n✅ **Сообщения о приеме на работу:**",
+            f"   • Всего сообщений: **{len(hired_messages)}**",
+            f"   • Уникальных авторов: **{len(hired_authors)}**",
+            "\n❌ **Сообщения об увольнениях:**",
+            f"   • Всего сообщений: **{len(fired_messages)}**",
+            f"   • Уникальных авторов: **{len(fired_authors)}**",
+            "\n🏆 **ТОП-5 авторов сообщений о приеме:**"
+        ]
+        
+        # ТОП-5 авторов по приему
+        top_hired = sorted(hired_authors.items(), key=lambda x: x[1], reverse=True)[:5]
+        if top_hired:
+            for i, (author, count) in enumerate(top_hired, 1):
+                report_lines.append(f"**{i}.** {author} — **{count}** сообщений")
+        else:
+            report_lines.append("ℹ️ Нет сообщений о приеме на работу")
+        
+        # ТОП-5 авторов по увольнениям
+        report_lines.append("\n🔥 **ТОП-5 авторов сообщений об увольнениях:**")
+        top_fired = sorted(fired_authors.items(), key=lambda x: x[1], reverse=True)[:5]
+        if top_fired:
+            for i, (author, count) in enumerate(top_fired, 1):
+                report_lines.append(f"**{i}.** {author} — **{count}** сообщений")
+        else:
+            report_lines.append("ℹ️ Нет сообщений об увольнениях")
+        
+        report = "\n".join(report_lines)
+        
+        # ИСПРАВЛЕНО: добавлена пагинация для длинных отчетов
+        if len(report) > 1900:
+            parts = [report[i:i+1900] for i in range(0, len(report), 1900)]
+            for part in parts:
+                await ctx.send(part)
+        else:
+            await ctx.send(report)
+        
+        # Сохранение данных в Google Sheets
+        values = []
+        
+        # Данные по приему
+        if hired_messages:
+            top_hired_authors = ", ".join([f"{author} ({count})" for author, count in top_hired][:3])
+            # ИСПРАВЛЕНО: добавлено экранирование значений
+            values.append([
+                sanitize_value(ctx.guild.name),
+                sanitize_value(channel.name),
+                sanitize_value(start_date),
+                sanitize_value(end_date),
+                sanitize_value("принят"),
+                sanitize_value(len(hired_messages)),
+                sanitize_value(len(hired_authors)),
+                sanitize_value(top_hired_authors),
+                sanitize_value(datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC"))
+            ])
+        
+        # Данные по увольнениям
+        if fired_messages:
+            top_fired_authors = ", ".join([f"{author} ({count})" for author, count in top_fired][:3])
+            # ИСПРАВЛЕНО: добавлено экранирование значений
+            values.append([
+                sanitize_value(ctx.guild.name),
+                sanitize_value(channel.name),
+                sanitize_value(start_date),
+                sanitize_value(end_date),
+                sanitize_value("уволен"),
+                sanitize_value(len(fired_messages)),
+                sanitize_value(len(fired_authors)),
+                sanitize_value(top_fired_authors),
+                sanitize_value(datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC"))
+            ])
+        
+        # Отправка в Google Sheets
+        if values:
+            try:
+                sheets_service.spreadsheets().values().append(
+                    spreadsheetId=SHEET_ID,
+                    range="StaffAnalysis!A:I",
+                    valueInputOption="USER_ENTERED",
+                    body={"values": values}
+                ).execute()
+                await ctx.send("✅ Данные о кадровых сообщениях сохранены в Google Sheets!")
+            except HttpError as e:
+                if "Unable to parse range" in str(e):
+                    await ctx.send("❌ Ошибка записи в таблицу: отсутствуют необходимые листы. Бот пытается создать их автоматически...")
+                    ensure_sheets_exist(SHEET_ID)
+                    sheets_service.spreadsheets().values().append(
+                        spreadsheetId=SHEET_ID,
+                        range="StaffAnalysis!A:I",
+                        valueInputOption="USER_ENTERED",
+                        body={"values": values}
+                    ).execute()
+                    await ctx.send("✅ Листы созданы и данные сохранены!")
+                else:
+                    # ИСПРАВЛЕНО: добавлено подробное логирование ошибок
+                    error_content = json.loads(e.content.decode('utf-8')) if hasattr(e, 'content') else str(e)
+                    print(f"Google Sheets API error: {error_content}")
+                    print(f"Request details: {e.uri}")
+                    await ctx.send(f"⚠️ Ошибка при сохранении в Google Sheets: {str(e)}")
+    
+    except ValueError as e:
+        await ctx.send(f"❌ Ошибка формата даты: {str(e)}")
+    except discord.Forbidden:
+        await ctx.send(f"❌ У бота нет прав на чтение канала {channel.mention}. Проверьте разрешения в настройках сервера.")
+    except Exception as e:
+        await ctx.send(f"⚠️ Критическая ошибка: `{str(e)}`")
+        print(f"\n🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ В КОМАНДЕ staff_analysis: {e}")
+    finally:
+        # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
+        gc.collect()
 
 # === КОМАНДА: СПРАВКА ===
 @bot.command(name="help")
@@ -702,6 +929,12 @@ async def help_cmd(ctx):
         f"**`{COMMAND_PREFIX}export_images #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
         "→ Экспорт полного отчёта по изображениям в CSV файл и сохранение в Google Sheets\n"
         "→ В CSV включаются имена авторов изображений\n\n"
+        
+        f"**`{COMMAND_PREFIX}staff_analysis #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
+        "→ Анализ сообщений о кадровых изменениях (принят/уволен)\n"
+        "→ Подсчет количества сообщений по каждому типу\n"
+        "→ Отображение ТОП-5 активных авторов по имени\n"
+        "→ Сохранение данных в Google Sheets\n\n"
         
         "**🔐 Безопасность:**\n"
         f"→ Все команды доступны **только пользователям с ролью `{SENIOR_ROLE_NAME}`**\n"
