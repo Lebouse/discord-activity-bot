@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # === ВЕРСИЯ БОТА ===
-BOT_VERSION = "1.2.1"  # Обновлено: исправлены критические ошибки
+BOT_VERSION = "1.2.1"  # Обновлено: исправлены критические ошибки и добавлены новые функции
 
 # === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ЭКРАНИРОВАНИЕ ЗНАЧЕНИЙ ДЛЯ GOOGLE SHEETS ===
 def sanitize_value(value):
@@ -416,7 +416,7 @@ async def activity(ctx, channel: discord.TextChannel, start_date: str, end_date:
         # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
         gc.collect()
 
-# === КОМАНДА: АНАЛИЗ ИЗОБРАЖЕНИЙ С ГРУППИРОВКОЙ ===
+# === КОМАНДА: АНАЛИЗ ИЗОБРАЖЕНИЙ С ГРУППИРОВКОЙ (ИСПРАВЛЕННАЯ) ===
 @bot.command(name="images")
 @has_senior_role()  # Применяем проверку роли
 async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None, limit: int = 500):
@@ -497,7 +497,8 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
         processed_messages = list(message_images.values())
         
         # Показываем первые 20 сообщений (а не изображений)
-        for i, data in enumerate(processed_messages[:20], 1):
+        messages_to_show = min(20, len(processed_messages))
+        for i, data in enumerate(processed_messages[:messages_to_show], 1):
             image_numbers = ", ".join(str(img["number"]) for img in data["images"])
             # ИСПРАВЛЕНО: убрано дублирование ссылок
             report_lines.append(f"**{i}.** {data['link']} • № {image_numbers} • **{data['author']}**")
@@ -506,7 +507,35 @@ async def images(ctx, channel: discord.TextChannel, start_date: str, end_date: s
             report_lines.append(f"\nℹ️ Показаны первые 20 из {total_messages} сообщений с изображениями. Для полного отчёта используйте `!export_images`")
         
         report = "\n".join(report_lines)
-        await ctx.send(report)
+        
+        # === ИСПРАВЛЕНО: ДОБАВЛЕНА ПАГИНАЦИЯ ДЛЯ ДЛИННЫХ ОТЧЕТОВ ===
+        if len(report) > 1900:
+            # Делим отчет на части
+            parts = []
+            current_part = []
+            current_length = 0
+            
+            for line in report_lines:
+                line_length = len(line) + 1  # +1 для символа новой строки
+                if current_length + line_length > 1900 and current_part:
+                    parts.append("\n".join(current_part))
+                    current_part = [line]
+                    current_length = line_length
+                else:
+                    current_part.append(line)
+                    current_length += line_length
+            
+            if current_part:
+                parts.append("\n".join(current_part))
+            
+            # Отправляем части отчета
+            for i, part in enumerate(parts, 1):
+                if i == 1:
+                    await ctx.send(part)
+                else:
+                    await ctx.send(f"**Часть {i} из {len(parts)}**\n{part}")
+        else:
+            await ctx.send(report)
         
         # Сохранение полного отчёта в Google Sheets
         if message_images:
@@ -693,7 +722,7 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
         
         # === ГЕНЕРАЦИЯ CSV ФАЙЛА ===
         # ИСПРАВЛЕНО: добавлена правильная обработка кодировки
-        output = io.StringIO(newline='')
+        output = io.StringIO(newline='', encoding='utf-8')
         writer = csv.writer(output)
         writer.writerow(["Ссылка на сообщение", "№ изображений", "Автор", "Дата"])
         
@@ -724,16 +753,19 @@ async def export_images(ctx, channel: discord.TextChannel, start_date: str, end_
         # ИСПРАВЛЕНО: добавлена сборка мусора для оптимизации памяти
         gc.collect()
 
-# === КОМАНДА: АНАЛИЗ КАДРОВЫХ СООБЩЕНИЙ (ИСПРАВЛЕНА) ===
+# === КОМАНДА: АНАЛИЗ КАДРОВЫХ СООБЩЕНИЙ (ОБНОВЛЕННАЯ) ===
 @bot.command(name="staff_analysis")
 @has_senior_role()  # Применяем проверку роли
 async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end_date: str = None):
     """
-    Анализ сообщений о кадровых изменениях (принят/уволен) за период.
+    Анализ сообщений о кадровых изменениях (принят/уволен/повышен) за период.
     Пример: !staff_analysis #personnel 01-01-2026 07-01-2026
     
-    💡 Бот анализирует сообщения, содержащие слова "принят" и "уволен"
-    💡 Отображает ТОП авторов по каждому типу сообщений
+    💡 Бот анализирует сообщения, содержащие слова:
+        - "принят", "трудоустроен" и т.д. (прием на работу)
+        - "уволен", "увольнение" и т.д. (увольнения)
+        - "повышен", "получил звание" и т.д. (повышения в звании)
+    💡 Отображает ТОП-10 авторов по каждому типу сообщений
     💡 Доступно только пользователям с ролью @Старший состав ФСВНГ
     """
     await ctx.send(f"🔄 Запускаю анализ кадровых сообщений в канале {channel.mention}...")
@@ -751,15 +783,18 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
             return
         
         # Ключевые слова для поиска
-        hired_keywords = ["принят", "принята", "принято", "принят(а)", "приняты", "оформлен", "оформлена", "трудоустроен", "трудоустроена"]
-        fired_keywords = ["уволен", "уволена", "уволено", "уволен(а)", "уволены", "увольнение", "уволен по собственному", "уволен за нарушение"]
+        hired_keywords = ["принят", "принята", "принято", "принят(а)", "приняты", "оформлен", "оформлена", "трудоустроен", "трудоустроена", "принял контракт", "заключил контракт"]
+        fired_keywords = ["уволен", "уволена", "уволено", "уволен(а)", "уволены", "увольнение", "уволен по собственному", "уволен за нарушение", "расторг контракт", "прекратил контракт"]
+        promoted_keywords = ["повышен", "повышение", "получил звание", "награжден званием", "присвоено звание", "повышен в звании", "предоставлено звание", "награжден повышением", "присвоено очередное звание", "награжден званием"]
         
         # Словари для сбора статистики
-        hired_messages = []  # Список сообщений о приеме
-        fired_messages = []  # Список сообщений об увольнении
+        hired_messages = []    # Список сообщений о приеме
+        fired_messages = []    # Список сообщений об увольнениях
+        promoted_messages = [] # Список сообщений о повышениях
         
-        hired_authors = {}  # {author_id: количество сообщений}
-        fired_authors = {}  # {author_id: количество сообщений}
+        hired_authors = {}     # {author: количество сообщений}
+        fired_authors = {}     # {author: количество сообщений}
+        promoted_authors = {}  # {author: количество сообщений}
         
         # Сбор данных
         # ИСПРАВЛЕНО: добавлен лимит для безопасности
@@ -768,34 +803,39 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
                 continue
             
             content_lower = message.content.lower()
-            author_id = str(message.author.id)
             display_name = str(message.author.display_name)
             
             # ИСПРАВЛЕНО: используется поиск целых слов с помощью регулярных выражений
+            # Анализ сообщений о приеме
             is_hired = any(re.search(rf'\b{re.escape(keyword)}\b', content_lower) for keyword in hired_keywords)
+            # Анализ сообщений об увольнениях 
             is_fired = any(re.search(rf'\b{re.escape(keyword)}\b', content_lower) for keyword in fired_keywords)
+            # Анализ сообщений о повышениях (НОВОЕ)
+            is_promoted = any(re.search(rf'\b{re.escape(keyword)}\b', content_lower) for keyword in promoted_keywords)
+            
+            message_info = {
+                "content": message.content,
+                "author": display_name,
+                "created_at": message.created_at.strftime("%d-%m-%Y %H:%M"),
+                "link": f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
+            }
             
             if is_hired:
-                hired_messages.append({
-                    "content": message.content,
-                    "author": display_name,
-                    "created_at": message.created_at.strftime("%d-%m-%Y %H:%M"),
-                    "link": f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
-                })
+                hired_messages.append(message_info)
                 hired_authors[display_name] = hired_authors.get(display_name, 0) + 1
             
             if is_fired:
-                fired_messages.append({
-                    "content": message.content,
-                    "author": display_name,
-                    "created_at": message.created_at.strftime("%d-%m-%Y %H:%M"),
-                    "link": f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{message.id}"
-                })
+                fired_messages.append(message_info)
                 fired_authors[display_name] = fired_authors.get(display_name, 0) + 1
+            
+            # Обработка повышений (НОВОЕ)
+            if is_promoted:
+                promoted_messages.append(message_info)
+                promoted_authors[display_name] = promoted_authors.get(display_name, 0) + 1
         
         # Формирование отчета
         report_lines = [
-            f"📊 **Отчет по кадровым сообщениям**",
+            f"📊 **Отчет по кадровым сообщениям (версия {BOT_VERSION})**",
             f"📅 Период: `{start_date} - {end_date}`",
             f"📈 Канал: `{channel.name}`",
             "\n✅ **Сообщения о приеме на работу:**",
@@ -804,25 +844,37 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
             "\n❌ **Сообщения об увольнениях:**",
             f"   • Всего сообщений: **{len(fired_messages)}**",
             f"   • Уникальных авторов: **{len(fired_authors)}**",
-            "\n🏆 **ТОП-5 авторов сообщений о приеме:**"
+            "\n🔼 **Сообщения о повышениях (НОВОЕ):**",  # Новая секция
+            f"   • Всего сообщений: **{len(promoted_messages)}**",
+            f"   • Уникальных авторов: **{len(promoted_authors)}**",
+            "\n🏆 **ТОП-10 авторов сообщений о приеме:**"
         ]
         
-        # ТОП-5 авторов по приему
-        top_hired = sorted(hired_authors.items(), key=lambda x: x[1], reverse=True)[:5]
+        # ТОП-10 авторов по приему (расширено с 5 до 10)
+        top_hired = sorted(hired_authors.items(), key=lambda x: x[1], reverse=True)[:10]
         if top_hired:
             for i, (author, count) in enumerate(top_hired, 1):
                 report_lines.append(f"**{i}.** {author} — **{count}** сообщений")
         else:
             report_lines.append("ℹ️ Нет сообщений о приеме на работу")
         
-        # ТОП-5 авторов по увольнениям
-        report_lines.append("\n🔥 **ТОП-5 авторов сообщений об увольнениях:**")
-        top_fired = sorted(fired_authors.items(), key=lambda x: x[1], reverse=True)[:5]
+        # ТОП-10 авторов по увольнениям (расширено с 5 до 10)
+        report_lines.append("\n🔥 **ТОП-10 авторов сообщений об увольнениях:**")
+        top_fired = sorted(fired_authors.items(), key=lambda x: x[1], reverse=True)[:10]
         if top_fired:
             for i, (author, count) in enumerate(top_fired, 1):
                 report_lines.append(f"**{i}.** {author} — **{count}** сообщений")
         else:
             report_lines.append("ℹ️ Нет сообщений об увольнениях")
+        
+        # ТОП-10 авторов по повышениям (НОВОЕ, расширено до 10)
+        report_lines.append("\n⭐ **ТОП-10 авторов сообщений о повышениях:**")
+        top_promoted = sorted(promoted_authors.items(), key=lambda x: x[1], reverse=True)[:10]
+        if top_promoted:
+            for i, (author, count) in enumerate(top_promoted, 1):
+                report_lines.append(f"**{i}.** {author} — **{count}** сообщений")
+        else:
+            report_lines.append("ℹ️ Нет сообщений о повышениях")
         
         report = "\n".join(report_lines)
         
@@ -839,6 +891,7 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
         
         # Данные по приему
         if hired_messages:
+            # Берем ТОП-3 авторов для сохранения в таблицу (чтобы не было слишком длинных строк)
             top_hired_authors = ", ".join([f"{author} ({count})" for author, count in top_hired][:3])
             # ИСПРАВЛЕНО: добавлено экранирование значений
             values.append([
@@ -866,6 +919,21 @@ async def staff_analysis(ctx, channel: discord.TextChannel, start_date: str, end
                 sanitize_value(len(fired_messages)),
                 sanitize_value(len(fired_authors)),
                 sanitize_value(top_fired_authors),
+                sanitize_value(datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC"))
+            ])
+        
+        # Данные по повышениям (НОВОЕ)
+        if promoted_messages:
+            top_promoted_authors = ", ".join([f"{author} ({count})" for author, count in top_promoted][:3])
+            values.append([
+                sanitize_value(ctx.guild.name),
+                sanitize_value(channel.name),
+                sanitize_value(start_date),
+                sanitize_value(end_date),
+                sanitize_value("повышен"),
+                sanitize_value(len(promoted_messages)),
+                sanitize_value(len(promoted_authors)),
+                sanitize_value(top_promoted_authors),
                 sanitize_value(datetime.datetime.now(datetime.timezone.utc).strftime("%d-%m-%Y %H:%M:%S UTC"))
             ])
         
@@ -931,9 +999,9 @@ async def help_cmd(ctx):
         "→ В CSV включаются имена авторов изображений\n\n"
         
         f"**`{COMMAND_PREFIX}staff_analysis #канал ДД-ММ-ГГГГ [ДД-ММ-ГГГГ]`**\n"
-        "→ Анализ сообщений о кадровых изменениях (принят/уволен)\n"
+        "→ Анализ сообщений о кадровых изменениях (принят/уволен/повышен)\n"
         "→ Подсчет количества сообщений по каждому типу\n"
-        "→ Отображение ТОП-5 активных авторов по имени\n"
+        "→ Отображение ТОП-10 активных авторов по имени\n"
         "→ Сохранение данных в Google Sheets\n\n"
         
         "**🔐 Безопасность:**\n"
